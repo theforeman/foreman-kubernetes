@@ -1,0 +1,11 @@
+# Apply this overlay to the foreman-stack release when deploying the separate
+# foreman-execution-proxy chart. The plugins are packaged in the official image
+# but remain opt-in until the real execution integration drill passes.
+foreman:
+  pluginPolicy:
+    allowUnverified: true
+  enabledPlugins:
+    - foreman-tasks
+    - katello
+    - foreman_remote_execution
+    - foreman_ansible

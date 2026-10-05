@@ -1,0 +1,44 @@
+proxy:
+  foremanUrl: https://foreman.example.com
+  trustedHosts:
+    - foreman.example.com
+  existingTlsSecret: execution-proxy-tls
+  existingForemanClientSecret: execution-proxy-foreman-client
+
+ssh:
+  existingKeySecret: execution-proxy-ssh
+  hostKeyVerification:
+    enabled: true
+    existingKnownHostsSecret: execution-proxy-known-hosts
+    knownHostsKey: known_hosts
+
+ansible:
+  # Populate this claim from a reviewed Git or Ansible Galaxy pipeline. The
+  # execution proxy mounts it read-only.
+  existingClaim: foreman-ansible-content
+
+state:
+  existingClaim: foreman-execution-proxy-state
+
+smokeTest:
+  # Must match foreman.existingCertificateSecret in the application release.
+  # The certificate CN must also appear in proxy.trustedHosts above.
+  foremanCertificateSecret: foreman-certificates
+
+networkPolicy:
+  egress:
+    enabled: true
+    foreman:
+      peers:
+        # Replace this documentation address with the Foreman ingress or load
+        # balancer address resolved by proxy.foremanUrl.
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - 443
+    targets:
+      peers:
+        - ipBlock:
+            cidr: 192.0.2.0/24
+      ports:
+        - 22
