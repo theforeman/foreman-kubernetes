@@ -1,0 +1,217 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["nameOverride", "fullnameOverride", "imagePullSecrets", "image", "controller", "health", "service", "monitoring", "networkPolicy", "serviceAccount", "rbac", "scheduling", "resources"],
+  "allOf": [
+    {
+      "if": { "properties": { "serviceAccount": { "properties": { "create": { "const": false } } } } },
+      "then": { "properties": { "serviceAccount": { "properties": { "name": { "minLength": 1 } } } } }
+    }
+  ],
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "tag", "pullPolicy"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "type": "string", "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "controller": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replicas", "pollSeconds", "commandTimeoutSeconds", "commandTerminationGraceSeconds", "certificateMinimumValiditySeconds", "releaseLeaseDurationSeconds", "leaderLeaseName", "leaderLeaseDurationSeconds", "terminationGracePeriodSeconds"],
+      "properties": {
+        "replicas": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "pollSeconds": { "type": "integer", "minimum": 1, "maximum": 300 },
+        "commandTimeoutSeconds": { "type": "integer", "minimum": 5, "maximum": 1800 },
+        "commandTerminationGraceSeconds": { "type": "integer", "minimum": 1, "maximum": 30 },
+        "certificateMinimumValiditySeconds": { "type": "integer", "minimum": 0, "maximum": 2592000 },
+        "releaseLeaseDurationSeconds": { "type": "integer", "minimum": 30, "maximum": 3600 },
+        "leaderLeaseName": { "type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" },
+        "leaderLeaseDurationSeconds": { "type": "integer", "minimum": 30, "maximum": 300 },
+        "terminationGracePeriodSeconds": { "type": "integer", "minimum": 5, "maximum": 300 }
+      }
+    },
+    "health": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["port", "readinessMaxStalenessSeconds"],
+      "properties": {
+        "port": { "type": "integer", "minimum": 1024, "maximum": 65535 },
+        "readinessMaxStalenessSeconds": { "type": "integer", "minimum": 15, "maximum": 3600 }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["annotations", "type"],
+      "properties": {
+        "annotations": { "type": "object", "additionalProperties": { "type": "string" } },
+        "type": { "type": "string", "enum": ["ClusterIP"] }
+      }
+    },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["serviceMonitor", "prometheusRule", "grafanaDashboard"],
+      "properties": {
+        "serviceMonitor": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "labels", "interval", "scrapeTimeout"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "labels": { "type": "object", "additionalProperties": { "type": "string" } },
+            "interval": { "type": "string", "pattern": "^[1-9][0-9]*(ms|s|m|h)$" },
+            "scrapeTimeout": { "type": "string", "pattern": "^[1-9][0-9]*(ms|s|m|h)$" }
+          }
+        },
+        "prometheusRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "labels"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        },
+        "grafanaDashboard": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "labels"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ingress", "egress"],
+      "properties": {
+        "ingress": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "peers"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "peers": {
+              "type": "array",
+              "items": { "$ref": "#/definitions/networkPolicyPeer" }
+            }
+          }
+        },
+        "egress": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "dns", "apiServer"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "dns": { "$ref": "#/definitions/networkPolicyPeer" },
+            "apiServer": { "$ref": "#/definitions/networkPolicyDestination" }
+          }
+        }
+      }
+    },
+    "serviceAccount": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "name"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" }
+      }
+    },
+    "rbac": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["create", "clusterPreflight"],
+      "properties": {
+        "create": { "type": "boolean" },
+        "clusterPreflight": { "type": "boolean" }
+      }
+    },
+    "scheduling": { "$ref": "#/definitions/scheduling" },
+    "resources": { "type": "object" }
+  },
+  "definitions": {
+    "scheduling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["priorityClassName", "nodeSelector", "tolerations"],
+      "properties": {
+        "priorityClassName": { "type": "string" },
+        "nodeSelector": { "type": "object", "additionalProperties": { "type": "string" } },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "key": { "type": "string" },
+              "operator": { "enum": ["Equal", "Exists"] },
+              "value": { "type": "string" },
+              "effect": { "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute"] },
+              "tolerationSeconds": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "networkPolicyPeer": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": false,
+      "properties": {
+        "ipBlock": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cidr"],
+          "properties": {
+            "cidr": { "type": "string", "minLength": 1 },
+            "except": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "namespaceSelector": { "type": "object", "minProperties": 1 },
+        "podSelector": { "type": "object", "minProperties": 1 }
+      }
+    },
+    "networkPolicyDestination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["peers", "ports"],
+      "properties": {
+        "peers": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/networkPolicyPeer" }
+        },
+        "ports": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        }
+      }
+    }
+  }
+}

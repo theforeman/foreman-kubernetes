@@ -1,0 +1,84 @@
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+
+image:
+  repository: foreman-release-operator
+  tag: development
+  pullPolicy: IfNotPresent
+
+controller:
+  replicas: 2
+  pollSeconds: 5
+  commandTimeoutSeconds: 60
+  commandTerminationGraceSeconds: 5
+  certificateMinimumValiditySeconds: 86400
+  releaseLeaseDurationSeconds: 300
+  leaderLeaseName: foreman-release-controller-leader
+  leaderLeaseDurationSeconds: 30
+  terminationGracePeriodSeconds: 30
+
+health:
+  port: 9393
+  readinessMaxStalenessSeconds: 180
+
+service:
+  annotations: {}
+  type: ClusterIP
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    labels: {}
+    interval: 30s
+    scrapeTimeout: 10s
+  prometheusRule:
+    enabled: false
+    labels: {}
+  grafanaDashboard:
+    enabled: false
+    labels:
+      grafana_dashboard: "1"
+
+networkPolicy:
+  ingress:
+    # The health endpoint remains available to kubelet probes. Declare the
+    # Prometheus source explicitly before enabling the ServiceMonitor.
+    enabled: true
+    peers: []
+  egress:
+    # Enable only after identifying the in-cluster Kubernetes Service address
+    # or another API endpoint by selector or CIDR.
+    enabled: false
+    dns:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    apiServer:
+      peers: []
+      ports:
+        - 443
+
+serviceAccount:
+  create: true
+  name: ""
+
+rbac:
+  create: true
+  clusterPreflight: true
+
+scheduling:
+  priorityClassName: ""
+  nodeSelector: {}
+  tolerations: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    memory: 512Mi
