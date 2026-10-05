@@ -1,0 +1,98 @@
+{{- if and .Values.smartProxy.executionRegistration.enabled (not .Values.maintenance.enabled) }}
+{{- if not (has "foreman_remote_execution" .Values.foreman.enabledPlugins) }}
+{{- fail "execution Smart Proxy registration requires foreman_remote_execution" }}
+{{- end }}
+{{- if not (has "foreman_ansible" .Values.foreman.enabledPlugins) }}
+{{- fail "execution Smart Proxy registration requires foreman_ansible" }}
+{{- end }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman-stack.releaseJobName" (dict "root" . "component" "execution-proxy-register") }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "execution-proxy-registration") | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.podLabels" (dict "root" . "component" "execution-proxy-registration") | nindent 8 }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      restartPolicy: Never
+      serviceAccountName: {{ include "foreman-stack.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        fsGroup: 994
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 994
+        runAsNonRoot: true
+        runAsUser: 994
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if .Values.migrations.enabled }}
+      initContainers:
+        {{- include "foreman-stack.foremanMigrationWait" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: register
+          image: {{ include "foreman-stack.image" .Values.foreman.image }}
+          imagePullPolicy: {{ .Values.foreman.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 994 "runAsGroup" 994) | nindent 12 }}
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              attempt=1
+              until bin/rails runner '
+                name = ENV.fetch("EXECUTION_PROXY_NAME")
+                url = ENV.fetch("EXECUTION_PROXY_URL")
+                User.as_anonymous_admin do
+                  by_url = SmartProxy.unscoped.find_by(url: url)
+                  by_name = SmartProxy.unscoped.find_by(name: name)
+                  if by_url && by_name && by_url.id != by_name.id
+                    abort("Smart Proxy name and URL belong to different records")
+                  end
+                  proxy = by_url || by_name || SmartProxy.new
+                  proxy.name = name
+                  proxy.url = url
+                  abort(proxy.errors.full_messages.to_sentence) unless proxy.save
+                  actual = proxy.features.reload.pluck(:name).sort
+                  expected = ENV.fetch("EXECUTION_PROXY_FEATURES").split(",").sort
+                  abort("Smart Proxy features are #{actual.inspect}, expected #{expected.inspect}") unless actual == expected
+                end
+              '
+              do
+                if [ "${attempt}" -ge "${EXECUTION_PROXY_RETRY_ATTEMPTS}" ]; then
+                  echo "Unable to register execution proxy after ${attempt} attempts" >&2
+                  exit 1
+                fi
+                attempt=$((attempt + 1))
+                sleep "${EXECUTION_PROXY_RETRY_INTERVAL}"
+              done
+          env:
+            {{- include "foreman-stack.foremanEnv" . | nindent 12 }}
+            {{- include "foreman-stack.foremanDatabasePoolEnv" .Values.foreman.databasePools.utility | nindent 12 }}
+            - name: EXECUTION_PROXY_NAME
+              value: {{ .Values.smartProxy.executionRegistration.name | quote }}
+            - name: EXECUTION_PROXY_URL
+              value: {{ .Values.smartProxy.executionRegistration.url | quote }}
+            - name: EXECUTION_PROXY_FEATURES
+              value: {{ join "," .Values.smartProxy.executionRegistration.expectedFeatures | quote }}
+            - name: EXECUTION_PROXY_RETRY_ATTEMPTS
+              value: {{ .Values.smartProxy.executionRegistration.retryAttempts | quote }}
+            - name: EXECUTION_PROXY_RETRY_INTERVAL
+              value: {{ .Values.smartProxy.executionRegistration.retryIntervalSeconds | quote }}
+          resources:
+            {{- toYaml .Values.foreman.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "foreman-stack.foremanVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "foreman-stack.foremanVolumes" . | nindent 8 }}
+{{- end }}

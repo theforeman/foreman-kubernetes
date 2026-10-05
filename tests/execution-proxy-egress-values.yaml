@@ -1,0 +1,26 @@
+ssh:
+  userCertificate:
+    enabled: true
+    certificateKey: id_rsa_foreman_proxy-cert.pub
+    caPublicKeyKey: ssh-user-ca.pub
+  hostKeyVerification:
+    enabled: true
+    existingKnownHostsSecret: proxy-known-hosts
+    knownHostsKey: known_hosts
+
+networkPolicy:
+  egress:
+    enabled: true
+    foreman:
+      peers:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+      ports:
+        - 443
+    targets:
+      peers:
+        - ipBlock:
+            cidr: 198.51.100.0/24
+      ports:
+        - 22
+        - 2222
