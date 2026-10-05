@@ -1,0 +1,9 @@
+scheduling:
+  priorityClassName: foreman-platform-critical
+  nodeSelector:
+    platform.theforeman.org/pool: foreman
+  tolerations:
+    - key: platform.theforeman.org/dedicated
+      operator: Equal
+      value: foreman
+      effect: NoSchedule
