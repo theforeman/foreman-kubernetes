@@ -1,0 +1,20 @@
+Foreman execution Smart Proxy resources were rendered for {{ .Release.Name }}.
+
+The profile exposes only this cluster-internal URL:
+  https://{{ include "foreman-execution-proxy.fullname" . }}:{{ .Values.proxy.service.port }}
+
+Register that URL in Foreman after its server certificate contains the Service
+DNS name. The chart intentionally does not store Foreman administrator or OAuth
+credentials and therefore does not auto-register itself.
+
+Pre-create these Secrets:
+  - {{ .Values.proxy.existingTlsSecret }} (server CA, certificate, and key)
+  - {{ .Values.proxy.existingForemanClientSecret }} (Foreman client CA, certificate, and key)
+  - {{ .Values.ssh.existingKeySecret }} (SSH private and public key{{ if .Values.ssh.userCertificate.enabled }}, certificate, and user CA public key{{ end }})
+{{- if .Values.ssh.hostKeyVerification.enabled }}
+  - {{ .Values.ssh.hostKeyVerification.existingKnownHostsSecret }} (trusted host keys or @cert-authority entries)
+{{- end }}
+
+The readiness probe accepts exactly the running features ansible, dynflow, and
+script. DHCP, DNS, TFTP, BMC, Realm, Discovery, Puppet/OpenVox, OpenSCAP, and
+container_gateway are not part of the profile.

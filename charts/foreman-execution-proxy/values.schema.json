@@ -1,0 +1,298 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["nameOverride", "fullnameOverride", "imagePullSecrets", "compatibilitySet", "releaseOperation", "maintenance", "secretRolloutToken", "image", "replicas", "progressDeadlineSeconds", "proxy", "ssh", "ansible", "state", "serviceAccount", "smokeTest", "monitoring", "networkPolicy", "scheduling", "resources", "initResources", "terminationGracePeriodSeconds"],
+  "properties": {
+    "nameOverride": { "type": "string" },
+    "fullnameOverride": { "type": "string" },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name"],
+        "additionalProperties": false,
+        "properties": { "name": { "type": "string", "minLength": 1 } }
+      }
+    },
+    "compatibilitySet": { "type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9][a-z0-9._-]*$" },
+    "releaseOperation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "ownerUid"],
+      "properties": {
+        "id": { "type": "string", "maxLength": 63, "pattern": "^$|^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$" },
+        "ownerUid": { "type": "string", "maxLength": 63, "pattern": "^$|^[a-z0-9]([a-z0-9._-]*[a-z0-9])?$" }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "id": { "const": "" },
+            "ownerUid": { "const": "" }
+          }
+        },
+        {
+          "properties": {
+            "id": { "minLength": 1 },
+            "ownerUid": { "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "maintenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": { "type": "boolean" }
+      }
+    },
+    "secretRolloutToken": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "image": {
+      "type": "object",
+      "required": ["repository", "tag", "pullPolicy"],
+      "additionalProperties": false,
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "tag": { "type": "string", "minLength": 1 },
+        "pullPolicy": { "enum": ["Always", "IfNotPresent", "Never"] }
+      }
+    },
+    "replicas": {
+      "const": 1,
+      "description": "The current Dynflow and SSH runtime contract is singleton-only."
+    },
+    "progressDeadlineSeconds": { "type": "integer", "minimum": 60, "maximum": 86400 },
+    "proxy": {
+      "type": "object",
+      "required": ["foremanUrl", "requestDrainSeconds", "trustedHosts", "logLevel", "tlsMinVersion", "service", "existingTlsSecret", "tlsSecretKeys", "existingForemanClientSecret", "foremanClientSecretKeys"],
+      "additionalProperties": false,
+      "properties": {
+        "foremanUrl": { "type": "string", "pattern": "^https://" },
+        "requestDrainSeconds": { "type": "integer", "minimum": 0, "maximum": 60 },
+        "trustedHosts": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "logLevel": { "enum": ["DEBUG", "INFO", "WARN", "ERROR", "FATAL"] },
+        "tlsMinVersion": { "enum": ["1.2", "1.3"] },
+        "service": {
+          "type": "object",
+          "required": ["port"],
+          "additionalProperties": false,
+          "properties": {
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "existingTlsSecret": { "type": "string", "minLength": 1 },
+        "tlsSecretKeys": { "$ref": "#/definitions/certificateSecretKeys" },
+        "existingForemanClientSecret": { "type": "string", "minLength": 1 },
+        "foremanClientSecretKeys": { "$ref": "#/definitions/certificateSecretKeys" }
+      }
+    },
+    "ssh": {
+      "type": "object",
+      "required": ["existingKeySecret", "privateKeyKey", "publicKeyKey", "user", "remoteWorkingDir", "cleanupWorkingDirs", "userCertificate", "hostKeyVerification"],
+      "additionalProperties": false,
+      "properties": {
+        "existingKeySecret": { "type": "string", "minLength": 1 },
+        "privateKeyKey": { "type": "string", "minLength": 1 },
+        "publicKeyKey": { "type": "string", "minLength": 1 },
+        "user": { "type": "string", "minLength": 1 },
+        "remoteWorkingDir": { "type": "string", "pattern": "^/" },
+        "cleanupWorkingDirs": { "type": "boolean" },
+        "userCertificate": {
+          "type": "object",
+          "required": ["enabled", "certificateKey", "caPublicKeyKey"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "certificateKey": { "type": "string", "minLength": 1 },
+            "caPublicKeyKey": { "type": "string", "minLength": 1 }
+          }
+        },
+        "hostKeyVerification": {
+          "type": "object",
+          "required": ["enabled", "existingKnownHostsSecret", "knownHostsKey", "insecureSkipVerificationAcknowledgement"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "existingKnownHostsSecret": { "type": "string" },
+            "knownHostsKey": { "type": "string", "minLength": 1 },
+            "insecureSkipVerificationAcknowledgement": { "type": "string" }
+          },
+          "allOf": [
+            {
+              "if": { "properties": { "enabled": { "const": true } } },
+              "then": { "properties": { "existingKnownHostsSecret": { "minLength": 1 } } }
+            },
+            {
+              "if": { "properties": { "enabled": { "const": false } } },
+              "then": {
+                "properties": {
+                  "insecureSkipVerificationAcknowledgement": {
+                    "const": "I_UNDERSTAND_HOST_KEYS_ARE_NOT_VERIFIED"
+                  }
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "ansible": { "$ref": "#/definitions/storage" },
+    "state": { "$ref": "#/definitions/storage" },
+    "serviceAccount": {
+      "type": "object",
+      "required": ["create", "name"],
+      "additionalProperties": false,
+      "properties": {
+        "create": { "type": "boolean" },
+        "name": { "type": "string" }
+      }
+    },
+    "smokeTest": {
+      "type": "object",
+      "required": ["enabled", "foremanCertificateSecret", "activeDeadlineSeconds", "resources"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "foremanCertificateSecret": { "type": "string" },
+        "activeDeadlineSeconds": { "type": "integer", "minimum": 30, "maximum": 1800 },
+        "resources": { "$ref": "#/definitions/resources" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "enabled": { "const": true } } },
+          "then": { "properties": { "foremanCertificateSecret": { "minLength": 1 } } }
+        }
+      ]
+    },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["prometheusRule"],
+      "properties": {
+        "prometheusRule": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["enabled", "labels"],
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "labels": { "type": "object", "additionalProperties": { "type": "string" } }
+          }
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "required": ["enabled", "ingress", "egress"],
+      "additionalProperties": false,
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "ingress": {
+          "type": "object",
+          "required": ["peers"],
+          "additionalProperties": false,
+          "properties": { "peers": { "type": "array", "minItems": 1, "items": { "type": "object" } } }
+        },
+        "egress": {
+          "type": "object",
+          "required": ["enabled", "dns", "foreman", "targets"],
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "dns": { "type": "object" },
+            "foreman": { "$ref": "#/definitions/egressDestination" },
+            "targets": { "$ref": "#/definitions/egressDestination" }
+          }
+        }
+      }
+    },
+    "scheduling": { "$ref": "#/definitions/scheduling" },
+    "resources": { "$ref": "#/definitions/resources" },
+    "initResources": { "$ref": "#/definitions/resources" },
+    "terminationGracePeriodSeconds": { "type": "integer", "minimum": 30 }
+  },
+  "definitions": {
+    "scheduling": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["priorityClassName", "nodeSelector", "tolerations"],
+      "properties": {
+        "priorityClassName": { "type": "string" },
+        "nodeSelector": { "type": "object", "additionalProperties": { "type": "string" } },
+        "tolerations": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "key": { "type": "string" },
+              "operator": { "enum": ["Equal", "Exists"] },
+              "value": { "type": "string" },
+              "effect": { "enum": ["NoSchedule", "PreferNoSchedule", "NoExecute"] },
+              "tolerationSeconds": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "certificateSecretKeys": {
+      "type": "object",
+      "required": ["ca", "certificate", "privateKey"],
+      "additionalProperties": false,
+      "properties": {
+        "ca": { "type": "string", "minLength": 1 },
+        "certificate": { "type": "string", "minLength": 1 },
+        "privateKey": { "type": "string", "minLength": 1 }
+      }
+    },
+    "storage": {
+      "type": "object",
+      "required": ["existingClaim", "storageClass", "accessMode", "size"],
+      "additionalProperties": false,
+      "properties": {
+        "existingClaim": { "type": "string" },
+        "storageClass": { "type": "string" },
+        "accessMode": { "enum": ["ReadWriteOnce", "ReadWriteMany"] },
+        "size": { "type": "string", "pattern": "^[1-9][0-9]*(Ei|Pi|Ti|Gi|Mi|Ki)$" }
+      }
+    },
+    "egressDestination": {
+      "type": "object",
+      "required": ["peers", "ports"],
+      "additionalProperties": false,
+      "properties": {
+        "peers": { "type": "array", "items": { "type": "object" } },
+        "ports": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 1, "maximum": 65535 }
+        }
+      }
+    },
+    "resources": {
+      "type": "object",
+      "required": ["requests", "limits"],
+      "properties": {
+        "requests": {
+          "type": "object",
+          "required": ["cpu", "memory"],
+          "properties": {
+            "cpu": { "type": "string", "minLength": 1 },
+            "memory": { "type": "string", "minLength": 1 }
+          }
+        },
+        "limits": {
+          "type": "object",
+          "required": ["memory"],
+          "properties": { "memory": { "type": "string", "minLength": 1 } }
+        }
+      }
+    }
+  }
+}
