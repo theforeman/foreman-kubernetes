@@ -1,0 +1,60 @@
+{{- if and .Values.monitoring.prometheusRule.enabled (not .Values.maintenance.enabled) }}
+{{- $fullname := include "foreman-stack.fullname" . -}}
+{{- $deploymentPattern := printf "%s-(foreman|candlepin|dynflow-(orchestrator|worker|worker-hosts-queue)|pulp-(api|content|worker|control))" $fullname -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $fullname }}
+  {{- $labels := mergeOverwrite (include "foreman-stack.labels" . | fromYaml) .Values.monitoring.prometheusRule.labels }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  groups:
+    - name: foreman-stack
+      rules:
+        - alert: ForemanStackMetricsMissing
+          expr: absent(kube_deployment_spec_replicas{namespace={{ .Release.Namespace | quote }},deployment={{ printf "%s-foreman" $fullname | quote }}})
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Foreman stack workload metrics are missing
+            description: kube-state-metrics does not expose the Foreman Deployment in namespace {{ .Release.Namespace }}.
+        - alert: ForemanStackDeploymentUnavailable
+          expr: >-
+            max by (namespace, deployment) (kube_deployment_spec_replicas{namespace={{ .Release.Namespace | quote }},deployment=~{{ $deploymentPattern | quote }}})
+            - max by (namespace, deployment) (kube_deployment_status_replicas_available{namespace={{ .Release.Namespace | quote }},deployment=~{{ $deploymentPattern | quote }}}) > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Foreman stack Deployment is unavailable
+            description: Deployment {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.deployment {{ "}}" }} has unavailable replicas for ten minutes.
+        - alert: ForemanStackPodCrashLooping
+          expr: >-
+            max by (namespace, pod, container) (max_over_time(kube_pod_container_status_waiting_reason{namespace={{ .Release.Namespace | quote }},pod=~{{ printf "%s-.*" $fullname | quote }},reason="CrashLoopBackOff"}[10m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Foreman stack container is crash looping
+            description: Container {{ "{{" }} $labels.container {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.pod {{ "}}" }} is repeatedly failing to start.
+        - alert: ForemanStackJobFailed
+          expr: >-
+            max by (namespace, job_name) (kube_job_status_failed{namespace={{ .Release.Namespace | quote }},job_name=~{{ printf "%s-.*" $fullname | quote }}}) > 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: Foreman stack Job failed
+            description: Job {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.job_name {{ "}}" }} failed and requires inspection.
+        - alert: ForemanStackPersistentVolumeClaimPending
+          expr: >-
+            max by (namespace, persistentvolumeclaim, phase) (kube_persistentvolumeclaim_status_phase{namespace={{ .Release.Namespace | quote }},persistentvolumeclaim=~{{ printf "%s-(foreman-tmp|foreman-avatars|pulp)" $fullname | quote }},phase=~"Pending|Lost"}) > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Foreman stack persistent volume claim is unavailable
+            description: PVC {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.persistentvolumeclaim {{ "}}" }} remains in {{ "{{" }} $labels.phase {{ "}}" }}.
+{{- end }}
