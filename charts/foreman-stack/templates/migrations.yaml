@@ -1,0 +1,190 @@
+{{- if and .Values.migrations.enabled (not .Values.maintenance.enabled) (not .Values.releaseOperation.skipMigrationJobs) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman-stack.releaseJobName" (dict "root" . "component" "candlepin-migrate") }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "candlepin-migrate") | nindent 4 }}
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  {{- if not .Values.releaseOperation.id }}
+  ttlSecondsAfterFinished: 3600
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.podLabels" (dict "root" . "component" "candlepin-migrate") | nindent 8 }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "foreman-stack.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ include "foreman-stack.image" .Values.candlepin.image }}
+          imagePullPolicy: {{ .Values.candlepin.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict) | nindent 12 }}
+          command:
+            - /usr/local/bin/candlepin-db-migrate
+          args:
+            - --url=jdbc:postgresql://{{ .Values.candlepin.database.host }}:{{ .Values.candlepin.database.port }}/{{ .Values.candlepin.database.name }}?sslmode={{ .Values.candlepin.database.sslMode }}{{ if .Values.candlepin.existingDatabaseCaSecret }}&sslrootcert=/etc/candlepin/certs/db-ca.crt{{ end }}
+            - --username={{ .Values.candlepin.database.user }}
+            - --headless=true
+            - --log-level=info
+            - update
+            - -Dcommunity=true
+          env:
+            - name: LIQUIBASE_COMMAND_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.candlepin.existingRuntimeSecret }}
+                  key: {{ .Values.candlepin.databasePasswordSecretKey }}
+          resources:
+            {{- toYaml .Values.candlepin.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.candlepin.existingDatabaseCaSecret }}
+            - name: candlepin-database-ca
+              mountPath: /etc/candlepin/certs/db-ca.crt
+              subPath: db-ca.crt
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if .Values.candlepin.existingDatabaseCaSecret }}
+        - name: candlepin-database-ca
+          secret:
+            secretName: {{ .Values.candlepin.existingDatabaseCaSecret }}
+            items:
+              - key: db-ca.crt
+                path: db-ca.crt
+        {{- end }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman-stack.releaseJobName" (dict "root" . "component" "pulp-migrate") }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-migrate") | nindent 4 }}
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  {{- if not .Values.releaseOperation.id }}
+  ttlSecondsAfterFinished: 3600
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.podLabels" (dict "root" . "component" "pulp-migrate") | nindent 8 }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "foreman-stack.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        fsGroup: 700
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 700
+        runAsNonRoot: true
+        runAsUser: 700
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migrate
+          image: {{ include "foreman-stack.image" .Values.pulp.image }}
+          imagePullPolicy: {{ .Values.pulp.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 700 "runAsGroup" 700) | nindent 12 }}
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              pulpcore-manager migrate --noinput
+              # PulpNoCreateRemoteUserBackend authenticates Foreman as this
+              # pre-existing identity. Keep direct password login unusable.
+              pulpcore-manager reset-admin-password --random
+          env:
+            {{- include "foreman-stack.pulpEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.pulp.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "foreman-stack.pulpScratchVolumeMount" . | nindent 12 }}
+            - name: pulp-config
+              mountPath: /etc/pulp/certs/database_fields.symmetric.key
+              subPath: database_fields.symmetric.key
+              readOnly: true
+            {{- include "foreman-stack.pulpDatabaseCaVolumeMount" . | nindent 12 }}
+            {{- include "foreman-stack.pulpValkeyCaVolumeMount" . | nindent 12 }}
+            {{- include "foreman-stack.pulpObjectStorageCaVolumeMount" . | nindent 12 }}
+      volumes:
+        {{- include "foreman-stack.pulpScratchVolume" . | nindent 8 }}
+        - name: pulp-config
+          secret:
+            secretName: {{ .Values.pulp.existingConfigSecret }}
+        {{- include "foreman-stack.pulpDatabaseCaVolume" . | nindent 8 }}
+        {{- include "foreman-stack.pulpValkeyCaVolume" . | nindent 8 }}
+        {{- include "foreman-stack.pulpObjectStorageCaVolume" . | nindent 8 }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman-stack.releaseJobName" (dict "root" . "component" "foreman-migrate") }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman-migrate") | nindent 4 }}
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  {{- if not .Values.releaseOperation.id }}
+  ttlSecondsAfterFinished: 3600
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.podLabels" (dict "root" . "component" "foreman-migrate") | nindent 8 }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "foreman-stack.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        fsGroup: 994
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        {{- include "foreman-stack.pulpMigrationWait" . | nindent 8 }}
+      containers:
+        - name: migrate
+          image: {{ include "foreman-stack.image" .Values.foreman.image }}
+          imagePullPolicy: {{ .Values.foreman.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 994 "runAsGroup" 994) | nindent 12 }}
+          command:
+            - /bin/bash
+            - -ec
+            - bin/rails db:migrate && bin/rails db:seed
+          env:
+            {{- include "foreman-stack.foremanEnv" . | nindent 12 }}
+            {{- include "foreman-stack.foremanDatabasePoolEnv" .Values.foreman.databasePools.utility | nindent 12 }}
+            {{- include "foreman-stack.foremanSeedEnv" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.foreman.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "foreman-stack.foremanVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "foreman-stack.foremanVolumes" . | nindent 8 }}
+        {{- include "foreman-stack.pulpScratchVolume" . | nindent 8 }}
+        - name: pulp-config
+          secret:
+            secretName: {{ .Values.pulp.existingConfigSecret }}
+        {{- include "foreman-stack.pulpDatabaseCaVolume" . | nindent 8 }}
+        {{- include "foreman-stack.pulpValkeyCaVolume" . | nindent 8 }}
+        {{- include "foreman-stack.pulpObjectStorageCaVolume" . | nindent 8 }}
+{{- end }}

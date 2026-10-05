@@ -1,0 +1,157 @@
+{{- if and .Values.smokeTest.enabled (not .Values.maintenance.enabled) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-smoke-test
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "smoke-test") | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.smokeTest.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.podLabels" (dict "root" . "component" "smoke-test") | nindent 8 }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        fsGroup: 994
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 994
+        runAsNonRoot: true
+        runAsUser: 994
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: smoke-test
+          image: {{ include "foreman-stack.image" .Values.foreman.image }}
+          imagePullPolicy: {{ .Values.foreman.image.pullPolicy }}
+          command:
+            - ruby
+            - -rjson
+            - -rnet/http
+            - -ropenssl
+            - -ruri
+            - -e
+          args:
+            - |
+              def get_json(name, raw_url)
+                uri = URI(raw_url)
+                client = Net::HTTP.new(uri.host, uri.port)
+                client.open_timeout = 10
+                client.read_timeout = 30
+                if uri.scheme == 'https'
+                  client.use_ssl = true
+                  client.verify_mode = OpenSSL::SSL::VERIFY_PEER
+                  client.ca_file = '/certificates/ca.crt'
+                  client.cert = OpenSSL::X509::Certificate.new(File.read('/certificates/client_cert.pem'))
+                  client.key = OpenSSL::PKey.read(File.read('/certificates/client_key.pem'))
+                end
+                headers = if name == 'Foreman'
+                            {
+                              'Host' => ENV.fetch('FOREMAN_REQUEST_HOST'),
+                              'X-Forwarded-Proto' => 'https'
+                            }
+                          else
+                            {}
+                          end
+                response = client.start { |http| http.get(uri.request_uri, headers) }
+                abort "#{name} returned HTTP #{response.code}: #{response.body}" unless response.is_a?(Net::HTTPSuccess)
+                JSON.parse(response.body)
+              end
+
+              foreman = get_json('Foreman', ENV.fetch('FOREMAN_STATUS_URL')).fetch('results')
+              abort 'Foreman database is not active' unless foreman.dig('foreman', 'database', 'active') == true
+              cache_servers = Array(foreman.dig('foreman', 'cache', 'servers'))
+              abort 'Foreman cache is not healthy' if cache_servers.empty? || !cache_servers.all? { |server| server['status'] == 'ok' }
+              abort 'Katello dependencies are not healthy' unless foreman.dig('katello', 'status') == 'ok'
+              puts 'Foreman and Katello dependencies are healthy'
+
+              candlepin = get_json('Candlepin', ENV.fetch('CANDLEPIN_STATUS_URL'))
+              abort "Candlepin mode is #{candlepin['mode'].inspect}" unless candlepin['mode'] == 'NORMAL'
+              puts 'Candlepin is healthy'
+
+              pulp = get_json('Pulp', ENV.fetch('PULP_STATUS_URL'))
+              abort 'Pulp database is not connected' if pulp.dig('database_connection', 'connected') == false
+              abort 'Pulp cache is not connected' if pulp.dig('redis_connection', 'connected') == false
+              abort 'Pulp has no online workers' if Array(pulp['online_workers']).empty?
+              abort 'Pulp has no online content apps' if Array(pulp['online_content_apps']).empty?
+              puts 'Pulp is healthy'
+
+              features = get_json('Pulp Smart Proxy features', ENV.fetch('PULP_FEATURES_URL')).fetch('pulpcore')
+              settings = features.fetch('settings')
+              expected_capabilities = JSON.parse(ENV.fetch('PULP_EXPECTED_CAPABILITIES')).sort
+              actual_capabilities = Array(features['capabilities']).map(&:to_s).sort
+              missing_capabilities = expected_capabilities - actual_capabilities
+              unless missing_capabilities.empty?
+                abort "Pulp is missing enabled capabilities: #{missing_capabilities.join(', ')}"
+              end
+              authentication = Array(features.dig('settings', 'client_authentication'))
+              unless authentication.include?('client_certificate')
+                abort 'Pulp Smart Proxy does not advertise client-certificate authentication'
+              end
+              unless settings['mirror'] == false
+                abort "Pulp Smart Proxy unexpectedly advertises mirror mode: #{settings['mirror'].inspect}"
+              end
+              unless settings['pulp_url'] == ENV.fetch('PULP_EXPECTED_API_URL')
+                abort "Pulp Smart Proxy advertises the wrong API URL: #{settings['pulp_url'].inspect}"
+              end
+              unless settings['container_registry_api_url'] == ENV.fetch('PULP_EXPECTED_CONTAINER_REGISTRY_API_URL')
+                abort "Pulp Smart Proxy advertises the wrong container registry API URL: #{settings['container_registry_api_url'].inspect}"
+              end
+              unless settings['rhsm_url'] == ENV.fetch('PULP_EXPECTED_RHSM_URL')
+                abort "Pulp Smart Proxy advertises the wrong RHSM URL: #{settings['rhsm_url'].inspect}"
+              end
+              puts "Pulp capabilities are active: #{expected_capabilities.join(', ')}"
+          env:
+            - name: HOME
+              value: /tmp
+            - name: FOREMAN_STATUS_URL
+              value: {{ printf "http://%s-foreman:%v/api/v2/ping" (include "foreman-stack.fullname" .) .Values.foreman.service.port | quote }}
+            - name: FOREMAN_REQUEST_HOST
+              value: {{ .Values.platform.fqdn | quote }}
+            - name: CANDLEPIN_STATUS_URL
+              value: {{ printf "https://%s:%v/candlepin/status" (include "foreman-stack.candlepinServiceName" .) .Values.candlepin.service.port | quote }}
+            - name: PULP_STATUS_URL
+              value: {{ printf "http://%s:%v/pulp/api/v3/status/" (include "foreman-stack.pulpApiServiceName" .) .Values.pulp.api.port | quote }}
+            - name: PULP_FEATURES_URL
+              value: {{ printf "%s/v2/features" (include "foreman-stack.pulpSmartProxyUrl" .) | quote }}
+            - name: PULP_EXPECTED_CAPABILITIES
+              value: {{ include "foreman-stack.pulpExpectedCapabilities" . | quote }}
+            - name: PULP_EXPECTED_API_URL
+              value: {{ include "foreman-stack.pulpControlProxyUrl" . | quote }}
+            - name: PULP_EXPECTED_CONTAINER_REGISTRY_API_URL
+              value: {{ printf "%s/pulpcore_registry/" (include "foreman-stack.pulpControlProxyUrl" .) | quote }}
+            - name: PULP_EXPECTED_RHSM_URL
+              value: {{ printf "%s/rhsm" (trimSuffix "/" .Values.platform.externalUrl) | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 994
+            runAsNonRoot: true
+            runAsUser: 994
+          resources:
+            {{- toYaml .Values.smokeTest.resources | nindent 12 }}
+          volumeMounts:
+            - name: certificates
+              mountPath: /certificates
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: certificates
+          secret:
+            secretName: {{ .Values.foreman.existingCertificateSecret }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+{{- end }}
