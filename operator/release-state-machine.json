@@ -1,0 +1,148 @@
+{
+  "schemaVersion": 1,
+  "initialPhase": "Pending",
+  "quiescentPhases": [
+    "Ready",
+    "Blocked"
+  ],
+  "transitions": [
+    {
+      "from": "Pending",
+      "event": "Reconcile",
+      "action": "ValidateReleaseSet",
+      "to": "Preflight"
+    },
+    {
+      "from": "Preflight",
+      "event": "ValidationSucceeded",
+      "action": "AcquireLease",
+      "to": "AcquiringLock"
+    },
+    {
+      "from": "AcquiringLock",
+      "event": "LeaseAcquired",
+      "action": "StartDependencyPreflight",
+      "to": "CheckingDependencies"
+    },
+    {
+      "from": "CheckingDependencies",
+      "event": "DependencyPreflightSucceeded",
+      "action": "StartMigrationJobs",
+      "to": "Migrating"
+    },
+    {
+      "from": "CheckingDependencies",
+      "event": "DependencyPreflightFailed",
+      "action": "RecordBlocked",
+      "to": "Blocked"
+    },
+    {
+      "from": "AcquiringLock",
+      "event": "LeaseBusy",
+      "action": "Requeue",
+      "to": "AcquiringLock"
+    },
+    {
+      "from": "AcquiringLock",
+      "event": "LeaseFailed",
+      "action": "RecordBlocked",
+      "to": "Blocked"
+    },
+    {
+      "from": "Preflight",
+      "event": "ValidationFailed",
+      "action": "RecordBlocked",
+      "to": "Blocked"
+    },
+    {
+      "from": "Migrating",
+      "event": "MigrationsSucceeded",
+      "action": "RollApplication",
+      "to": "RollingApplication"
+    },
+    {
+      "from": "Migrating",
+      "event": "MigrationsFailed",
+      "action": "RecordBlocked",
+      "to": "Blocked"
+    },
+    {
+      "from": "RollingApplication",
+      "event": "ApplicationAvailable",
+      "action": "RunApplicationSmokeTest",
+      "to": "VerifyingApplication"
+    },
+    {
+      "from": "RollingApplication",
+      "event": "ApplicationFailed",
+      "action": "RecordBlocked",
+      "to": "Blocked"
+    },
+    {
+      "from": "VerifyingApplication",
+      "event": "ApplicationSmokeSucceeded",
+      "action": "RollExecutionProxy",
+      "to": "RollingProxy"
+    },
+    {
+      "from": "VerifyingApplication",
+      "event": "ApplicationSmokeFailed",
+      "action": "RecordBlocked",
+      "to": "Blocked"
+    },
+    {
+      "from": "RollingProxy",
+      "event": "ExecutionProxyAvailable",
+      "action": "RunFinalSmokeTest",
+      "to": "Verifying"
+    },
+    {
+      "from": "RollingProxy",
+      "event": "ExecutionProxyFailed",
+      "action": "RecordBlocked",
+      "to": "Blocked"
+    },
+    {
+      "from": "Verifying",
+      "event": "FinalSmokeSucceeded",
+      "action": "RecordReady",
+      "to": "Ready"
+    },
+    {
+      "from": "Verifying",
+      "event": "FinalSmokeFailed",
+      "action": "RecordBlocked",
+      "to": "Blocked"
+    },
+    {
+      "from": "Ready",
+      "event": "DesiredSetChanged",
+      "action": "ValidateReleaseSet",
+      "to": "Preflight"
+    },
+    {
+      "from": "Ready",
+      "event": "ReconcileTokenChanged",
+      "action": "ValidateReleaseSet",
+      "to": "Preflight"
+    },
+    {
+      "from": "Ready",
+      "event": "DriftDetected",
+      "action": "ValidateRepair",
+      "to": "Preflight"
+    },
+    {
+      "from": "Ready",
+      "event": "UnsafeDriftDetected",
+      "action": "RecordBlocked",
+      "to": "Blocked"
+    },
+    {
+      "from": "Blocked",
+      "event": "RetryTokenChanged",
+      "action": "ValidateReleaseSet",
+      "to": "Preflight"
+    }
+  ]
+}
