@@ -1,0 +1,309 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "foreman-stack.pulpApiServiceName" . }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-api") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: pulp-api
+  ports:
+    - name: http
+      port: {{ .Values.pulp.api.port }}
+      targetPort: http
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "foreman-stack.pulpContentServiceName" . }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-content") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: pulp-content
+  ports:
+    - name: http
+      port: {{ .Values.pulp.content.port }}
+      targetPort: http
+{{- if not .Values.maintenance.enabled }}
+{{- $root := . }}
+{{- $services := list
+  (dict "name" "api" "replicas" .Values.pulp.api.replicas "port" .Values.pulp.api.port "workers" .Values.pulp.api.gunicornWorkers "timeout" .Values.pulp.api.gunicornTimeoutSeconds "gracefulTimeout" .Values.pulp.api.gunicornGracefulTimeoutSeconds "requestDrain" .Values.pulp.api.requestDrainSeconds "terminationGrace" .Values.pulp.api.terminationGracePeriodSeconds "maxRequests" .Values.pulp.api.gunicornMaxRequests "maxRequestsJitter" .Values.pulp.api.gunicornMaxRequestsJitter "autoscaling" .Values.pulp.api.autoscaling)
+  (dict "name" "content" "replicas" .Values.pulp.content.replicas "port" .Values.pulp.content.port "workers" .Values.pulp.content.gunicornWorkers "timeout" .Values.pulp.content.gunicornTimeoutSeconds "gracefulTimeout" .Values.pulp.content.gunicornGracefulTimeoutSeconds "requestDrain" .Values.pulp.content.requestDrainSeconds "terminationGrace" .Values.pulp.content.terminationGracePeriodSeconds "autoscaling" .Values.pulp.content.autoscaling)
+-}}
+{{- range $service := $services }}
+{{- if lt (int $service.terminationGrace) (add (int $service.requestDrain) (int $service.gracefulTimeout)) }}
+{{- fail (printf "pulp.%s.terminationGracePeriodSeconds must cover requestDrainSeconds plus gunicornGracefulTimeoutSeconds" $service.name) }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "foreman-stack.fullname" $root }}-pulp-{{ $service.name }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" $root "component" (printf "pulp-%s" $service.name)) | nindent 4 }}
+spec:
+  progressDeadlineSeconds: {{ $root.Values.platform.deploymentProgressDeadlineSeconds }}
+  {{- if not $service.autoscaling.enabled }}
+  replicas: {{ $service.replicas }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: pulp-{{ $service.name }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.pulpPodLabels" (dict "root" $root "component" (printf "pulp-%s" $service.name)) | nindent 8 }}
+      annotations:
+        {{- with $root.Values.pulp.serviceAccount.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        checksum/service-account: {{ toJson $root.Values.pulp.serviceAccount.annotations | sha256sum }}
+        {{- if eq $service.name "api" }}
+        checksum/health: {{ $root.Files.Get "files/pulp-readiness.py" | sha256sum }}
+        {{- else }}
+        checksum/health: {{ $root.Files.Get "files/pulp-app-readiness.py" | sha256sum }}
+        {{- end }}
+        checksum/secrets: {{ $root.Values.secretRolloutToken | sha256sum }}
+    spec:
+      {{- include "foreman-stack.scheduling" $root | nindent 6 }}
+      serviceAccountName: {{ include "foreman-stack.pulpServiceAccountName" $root }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ $service.terminationGrace }}
+      {{- include "foreman-stack.imagePullSecrets" $root | nindent 6 }}
+      securityContext:
+        fsGroup: 700
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 700
+        runAsNonRoot: true
+        runAsUser: 700
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if or (eq $root.Values.pulp.storage.backend "filesystem") $root.Values.migrations.enabled }}
+      initContainers:
+        {{- if eq $root.Values.pulp.storage.backend "filesystem" }}
+        {{- include "foreman-stack.pulpStoragePrepare" $root | nindent 8 }}
+        {{- end }}
+        {{- if $root.Values.migrations.enabled }}
+        {{- include "foreman-stack.pulpMigrationWait" $root | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: pulp-{{ $service.name }}
+          image: {{ include "foreman-stack.image" $root.Values.pulp.image }}
+          imagePullPolicy: {{ $root.Values.pulp.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 700 "runAsGroup" 700) | nindent 12 }}
+          command:
+            - /usr/bin/pulpcore-{{ $service.name }}
+          args:
+            - --bind
+            - 0.0.0.0:{{ $service.port }}
+            - --workers
+            - {{ $service.workers | quote }}
+            - --timeout
+            - {{ $service.timeout | quote }}
+            - --graceful-timeout
+            - {{ $service.gracefulTimeout | quote }}
+            {{- if eq $service.name "api" }}
+            - --max-requests
+            - {{ $service.maxRequests | quote }}
+            - --max-requests-jitter
+            - {{ $service.maxRequestsJitter | quote }}
+            {{- end }}
+            - --access-logfile
+            - "-"
+            - --log-level
+            - info
+            - --no-control-socket
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /usr/bin/sleep
+                  - {{ $service.requestDrain | quote }}
+          ports:
+            - name: http
+              containerPort: {{ $service.port }}
+          env:
+            {{- include "foreman-stack.pulpEnv" $root | nindent 12 }}
+            {{- include "foreman-stack.pulpObjectStorageCredentialEnv" $root | nindent 12 }}
+            {{- if eq $service.name "content" }}
+            - name: PULP_APP_TYPE
+              value: content
+            {{- end }}
+          volumeMounts:
+            {{- include "foreman-stack.pulpStorageVolumeMount" $root | nindent 12 }}
+            - name: pulp-config
+              mountPath: /etc/pulp/certs/database_fields.symmetric.key
+              subPath: database_fields.symmetric.key
+              readOnly: true
+            {{- include "foreman-stack.pulpDatabaseCaVolumeMount" $root | nindent 12 }}
+            {{- include "foreman-stack.pulpValkeyCaVolumeMount" $root | nindent 12 }}
+            {{- include "foreman-stack.pulpObjectStorageCaVolumeMount" $root | nindent 12 }}
+            {{- if eq $service.name "api" }}
+            - name: pulp-health
+              mountPath: /opt/foreman-kubernetes/pulp-readiness.py
+              subPath: pulp-readiness.py
+              readOnly: true
+            {{- else }}
+            - name: pulp-health
+              mountPath: /opt/foreman-kubernetes/pulp-app-readiness.py
+              subPath: pulp-app-readiness.py
+              readOnly: true
+            {{- end }}
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            {{- if eq $service.name "api" }}
+            exec:
+              command:
+                - python3
+                - /opt/foreman-kubernetes/pulp-readiness.py
+            {{- else }}
+            exec:
+              command:
+                - python3
+                - /opt/foreman-kubernetes/pulp-app-readiness.py
+            {{- end }}
+            initialDelaySeconds: 10
+            periodSeconds: {{ ternary 10 30 (eq $service.name "api") }}
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            {{- toYaml $root.Values.pulp.resources | nindent 12 }}
+      volumes:
+        {{- include "foreman-stack.pulpStorageVolume" $root | nindent 8 }}
+        - name: pulp-config
+          secret:
+            secretName: {{ $root.Values.pulp.existingConfigSecret }}
+        {{- include "foreman-stack.pulpDatabaseCaVolume" $root | nindent 8 }}
+        {{- include "foreman-stack.pulpValkeyCaVolume" $root | nindent 8 }}
+        {{- include "foreman-stack.pulpObjectStorageCaVolume" $root | nindent 8 }}
+        - name: pulp-health
+          configMap:
+            name: {{ include "foreman-stack.foremanConfigName" $root }}
+      {{- include "foreman-stack.topologySpread" (dict "Values" $root.Values "Release" $root.Release "component" (printf "pulp-%s" $service.name)) | nindent 6 }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-pulp-worker
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-worker") | nindent 4 }}
+spec:
+  progressDeadlineSeconds: {{ .Values.platform.deploymentProgressDeadlineSeconds }}
+  replicas: {{ .Values.pulp.workers.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pulp-worker
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.pulpPodLabels" (dict "root" . "component" "pulp-worker") | nindent 8 }}
+      annotations:
+        {{- with .Values.pulp.serviceAccount.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        checksum/service-account: {{ toJson .Values.pulp.serviceAccount.annotations | sha256sum }}
+        checksum/health: {{ .Files.Get "files/pulp-app-readiness.py" | sha256sum }}
+        checksum/secrets: {{ .Values.secretRolloutToken | sha256sum }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      serviceAccountName: {{ include "foreman-stack.pulpServiceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      terminationGracePeriodSeconds: {{ .Values.pulp.workers.terminationGracePeriodSeconds }}
+      securityContext:
+        fsGroup: 700
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 700
+        runAsNonRoot: true
+        runAsUser: 700
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if or (eq .Values.pulp.storage.backend "filesystem") .Values.migrations.enabled }}
+      initContainers:
+        {{- if eq .Values.pulp.storage.backend "filesystem" }}
+        {{- include "foreman-stack.pulpStoragePrepare" . | nindent 8 }}
+        {{- end }}
+        {{- if .Values.migrations.enabled }}
+        {{- include "foreman-stack.pulpMigrationWait" . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: pulp-worker
+          image: {{ include "foreman-stack.image" .Values.pulp.image }}
+          imagePullPolicy: {{ .Values.pulp.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 700 "runAsGroup" 700) | nindent 12 }}
+          command:
+            - /usr/bin/pulp-worker
+          env:
+            {{- include "foreman-stack.pulpEnv" . | nindent 12 }}
+            {{- include "foreman-stack.pulpObjectStorageCredentialEnv" . | nindent 12 }}
+            - name: PULP_APP_TYPE
+              value: worker
+          volumeMounts:
+            {{- include "foreman-stack.pulpStorageVolumeMount" . | nindent 12 }}
+            - name: pulp-config
+              mountPath: /etc/pulp/certs/database_fields.symmetric.key
+              subPath: database_fields.symmetric.key
+              readOnly: true
+            {{- include "foreman-stack.pulpDatabaseCaVolumeMount" . | nindent 12 }}
+            {{- include "foreman-stack.pulpValkeyCaVolumeMount" . | nindent 12 }}
+            {{- include "foreman-stack.pulpObjectStorageCaVolumeMount" . | nindent 12 }}
+            - name: pulp-health
+              mountPath: /opt/foreman-kubernetes/pulp-app-readiness.py
+              subPath: pulp-app-readiness.py
+              readOnly: true
+          readinessProbe:
+            exec:
+              command:
+                - python3
+                - /opt/foreman-kubernetes/pulp-app-readiness.py
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.pulp.resources | nindent 12 }}
+      volumes:
+        {{- include "foreman-stack.pulpStorageVolume" . | nindent 8 }}
+        - name: pulp-config
+          secret:
+            secretName: {{ .Values.pulp.existingConfigSecret }}
+        {{- include "foreman-stack.pulpDatabaseCaVolume" . | nindent 8 }}
+        {{- include "foreman-stack.pulpValkeyCaVolume" . | nindent 8 }}
+        {{- include "foreman-stack.pulpObjectStorageCaVolume" . | nindent 8 }}
+        - name: pulp-health
+          configMap:
+            name: {{ include "foreman-stack.foremanConfigName" . }}
+      {{- include "foreman-stack.topologySpread" (dict "Values" .Values "Release" .Release "component" "pulp-worker") | nindent 6 }}
+{{- end }}

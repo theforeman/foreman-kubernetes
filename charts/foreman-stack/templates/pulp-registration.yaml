@@ -1,0 +1,88 @@
+{{- if and .Values.pulp.controlProxy.registration.enabled (not .Values.maintenance.enabled) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman-stack.releaseJobName" (dict "root" . "component" "pulp-register") }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-registration") | nindent 4 }}
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  {{- if not .Values.releaseOperation.id }}
+  ttlSecondsAfterFinished: 3600
+  {{- end }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.podLabels" (dict "root" . "component" "pulp-registration") | nindent 8 }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "foreman-stack.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        fsGroup: 994
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 994
+        runAsNonRoot: true
+        runAsUser: 994
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if .Values.migrations.enabled }}
+      initContainers:
+        {{- include "foreman-stack.foremanMigrationWait" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: register
+          image: {{ include "foreman-stack.image" .Values.foreman.image }}
+          imagePullPolicy: {{ .Values.foreman.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 994 "runAsGroup" 994) | nindent 12 }}
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              attempt=1
+              until bin/rails runner '
+                name = ENV.fetch("PULP_PROXY_NAME")
+                url = ENV.fetch("PULP_PROXY_URL")
+                User.as_anonymous_admin do
+                  by_url = SmartProxy.unscoped.find_by(url: url)
+                  by_name = SmartProxy.unscoped.find_by(name: name)
+                  if by_url && by_name && by_url.id != by_name.id
+                    abort("Smart Proxy name and URL belong to different records")
+                  end
+                  proxy = by_url || by_name || SmartProxy.new
+                  proxy.name = name
+                  proxy.url = url
+                  abort(proxy.errors.full_messages.to_sentence) unless proxy.save
+                  abort("Pulp proxy did not report the Pulpcore feature") unless proxy.has_feature?("Pulpcore")
+                end
+              '
+              do
+                if [ "${attempt}" -ge "${PULP_PROXY_RETRY_ATTEMPTS}" ]; then
+                  echo "Unable to register Pulp after ${attempt} attempts" >&2
+                  exit 1
+                fi
+                attempt=$((attempt + 1))
+                sleep "${PULP_PROXY_RETRY_INTERVAL}"
+              done
+          env:
+            {{- include "foreman-stack.foremanEnv" . | nindent 12 }}
+            {{- include "foreman-stack.foremanDatabasePoolEnv" .Values.foreman.databasePools.utility | nindent 12 }}
+            - name: PULP_PROXY_NAME
+              value: {{ include "foreman-stack.pulpSmartProxyName" . | quote }}
+            - name: PULP_PROXY_URL
+              value: {{ include "foreman-stack.pulpSmartProxyUrl" . | quote }}
+            - name: PULP_PROXY_RETRY_ATTEMPTS
+              value: {{ .Values.pulp.controlProxy.registration.retryAttempts | quote }}
+            - name: PULP_PROXY_RETRY_INTERVAL
+              value: {{ .Values.pulp.controlProxy.registration.retryIntervalSeconds | quote }}
+          resources:
+            {{- toYaml .Values.foreman.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "foreman-stack.foremanVolumeMounts" . | nindent 12 }}
+      volumes:
+        {{- include "foreman-stack.foremanVolumes" . | nindent 8 }}
+{{- end }}
