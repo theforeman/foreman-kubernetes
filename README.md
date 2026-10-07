@@ -29,6 +29,21 @@ The project does not replace Foreman application development, publish modified
 application forks, or move infrastructure-facing Smart Proxy features into the
 Foreman web workload.
 
+## Development checks
+
+Helm is required to lint the charts. Install it using the
+[official Helm installation guide](https://helm.sh/docs/intro/install/) and
+ensure `helm` is available on your `PATH`.
+
+Run chart linting from the repository root with:
+
+```console
+make lint
+```
+
+This runs `helm lint` on each chart in the repository. CI's **Chart Lint** job
+runs the same `make lint` command.
+
 ## Status and collaboration
 
 The repository is being established as a sequence of small, reviewable changes.
