@@ -1,0 +1,128 @@
+{{- if not .Values.maintenance.enabled }}
+{{- if lt (int .Values.foreman.databasePools.dynflowWorker) (int .Values.foreman.dynflow.workerConcurrency) }}
+{{- fail "foreman.databasePools.dynflowWorker must be at least foreman.dynflow.workerConcurrency" }}
+{{- end }}
+{{- if lt (int .Values.foreman.databasePools.dynflowHostsQueue) (int .Values.foreman.dynflow.hostsQueueConcurrency) }}
+{{- fail "foreman.databasePools.dynflowHostsQueue must be at least foreman.dynflow.hostsQueueConcurrency" }}
+{{- end }}
+{{- $root := . -}}
+{{- $workers := list
+  (dict "name" "orchestrator" "replicas" 1 "autoscaling" (dict "enabled" false) "config" "dynflow-orchestrator.yml" "databasePool" .Values.foreman.databasePools.utility)
+  (dict "name" "worker" "replicas" .Values.foreman.dynflow.workers "autoscaling" .Values.foreman.dynflow.workerAutoscaling "config" "dynflow-worker.yml" "databasePool" .Values.foreman.databasePools.dynflowWorker)
+  (dict "name" "worker-hosts-queue" "replicas" .Values.foreman.dynflow.hostsQueueWorkers "autoscaling" .Values.foreman.dynflow.hostsQueueAutoscaling "config" "dynflow-worker-hosts-queue.yml" "databasePool" .Values.foreman.databasePools.dynflowHostsQueue)
+-}}
+{{- range $index, $worker := $workers }}
+{{- if $index }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "foreman-stack.fullname" $root }}-dynflow-{{ $worker.name }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" $root "component" (printf "dynflow-%s" $worker.name)) | nindent 4 }}
+spec:
+  progressDeadlineSeconds: {{ $root.Values.platform.deploymentProgressDeadlineSeconds }}
+  {{- if not $worker.autoscaling.enabled }}
+  replicas: {{ $worker.replicas }}
+  {{- end }}
+  {{- if eq $worker.name "orchestrator" }}
+  # A second orchestrator blocks during boot on the Redis singleton lock. A
+  # rolling update would wait for that pod to become Ready before removing the
+  # lock owner and would therefore deadlock the rollout.
+  strategy:
+    type: Recreate
+  {{- else }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: dynflow-{{ $worker.name }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.podLabels" (dict "root" $root "component" (printf "dynflow-%s" $worker.name)) | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $root.Template.BasePath "/runtime-config.yaml") $root | sha256sum }}
+        checksum/secrets: {{ $root.Values.secretRolloutToken | sha256sum }}
+    spec:
+      {{- include "foreman-stack.scheduling" $root | nindent 6 }}
+      terminationGracePeriodSeconds: {{ add $root.Values.foreman.dynflow.shutdownTimeoutSeconds 30 }}
+      serviceAccountName: {{ include "foreman-stack.serviceAccountName" $root }}
+      automountServiceAccountToken: false
+      {{- include "foreman-stack.imagePullSecrets" $root | nindent 6 }}
+      securityContext:
+        fsGroup: 994
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 994
+        runAsNonRoot: true
+        runAsUser: 994
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if $root.Values.migrations.enabled }}
+      initContainers:
+        {{- include "foreman-stack.foremanMigrationWait" $root | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: dynflow
+          image: {{ include "foreman-stack.image" $root.Values.foreman.image }}
+          imagePullPolicy: {{ $root.Values.foreman.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 994 "runAsGroup" 994) | nindent 12 }}
+          command:
+            - /usr/libexec/foreman/sidekiq-selinux
+          args:
+            - -e
+            - production
+            - -r
+            - ./extras/dynflow-sidekiq.rb
+            - -C
+            - /etc/foreman/dynflow/runtime.yml
+            - -t
+            - {{ $root.Values.foreman.dynflow.shutdownTimeoutSeconds | quote }}
+          env:
+            {{- include "foreman-stack.foremanEnv" $root | nindent 12 }}
+            {{- include "foreman-stack.foremanDatabasePoolEnv" $worker.databasePool | nindent 12 }}
+            - name: DYNFLOW_READINESS_FILE
+              value: /run/foreman-kubernetes/dynflow-ready
+          volumeMounts:
+            {{- include "foreman-stack.foremanVolumeMounts" $root | nindent 12 }}
+            - name: foreman-generated-config
+              mountPath: /etc/foreman/dynflow/runtime.yml
+              subPath: {{ $worker.config }}
+              readOnly: true
+            - name: dynflow-runtime
+              mountPath: /run/foreman-kubernetes
+          startupProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - test -f "${DYNFLOW_READINESS_FILE}"
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - test -f "${DYNFLOW_READINESS_FILE}"
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          resources:
+            {{- toYaml $root.Values.foreman.resources | nindent 12 }}
+      volumes:
+        {{- include "foreman-stack.foremanVolumes" $root | nindent 8 }}
+        - name: dynflow-runtime
+          emptyDir:
+            sizeLimit: 1Mi
+      {{- include "foreman-stack.topologySpread" (dict "Values" $root.Values "Release" $root.Release "component" (printf "dynflow-%s" $worker.name)) | nindent 6 }}
+{{- end }}
+{{- end }}

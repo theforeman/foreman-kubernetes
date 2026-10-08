@@ -1,0 +1,68 @@
+{{- if and .Values.recurringTasks.enabled (not .Values.maintenance.enabled) }}
+{{- $root := . }}
+{{- range $index, $task := .Values.recurringTasks.tasks }}
+{{- if $index }}
+---
+{{- end }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "foreman-stack.fullname" $root }}-{{ $task.name }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" $root "component" "foreman-cron") | nindent 4 }}
+spec:
+  schedule: {{ $task.schedule | quote }}
+  timeZone: {{ $root.Values.recurringTasks.timeZone | quote }}
+  startingDeadlineSeconds: {{ $root.Values.recurringTasks.startingDeadlineSeconds }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: {{ $root.Values.recurringTasks.activeDeadlineSeconds }}
+      ttlSecondsAfterFinished: 3600
+      template:
+        metadata:
+          labels:
+            {{- include "foreman-stack.podLabels" (dict "root" $root "component" "foreman-cron") | nindent 12 }}
+          annotations:
+            checksum/secrets: {{ $root.Values.secretRolloutToken | sha256sum }}
+        spec:
+          {{- include "foreman-stack.scheduling" $root | nindent 10 }}
+          restartPolicy: Never
+          serviceAccountName: {{ include "foreman-stack.serviceAccountName" $root }}
+          automountServiceAccountToken: false
+          {{- include "foreman-stack.imagePullSecrets" $root | nindent 10 }}
+          securityContext:
+            fsGroup: 994
+            fsGroupChangePolicy: OnRootMismatch
+            runAsGroup: 994
+            runAsNonRoot: true
+            runAsUser: 994
+            seccompProfile:
+              type: RuntimeDefault
+          {{- if $root.Values.migrations.enabled }}
+          initContainers:
+            {{- include "foreman-stack.foremanMigrationWait" $root | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: rake
+              image: {{ include "foreman-stack.image" $root.Values.foreman.image }}
+              imagePullPolicy: {{ $root.Values.foreman.image.pullPolicy }}
+              securityContext:
+                {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 994 "runAsGroup" 994) | nindent 16 }}
+              command:
+                - foreman-rake
+                - {{ $task.rakeTask }}
+              env:
+                {{- include "foreman-stack.foremanEnv" $root | nindent 16 }}
+                {{- include "foreman-stack.foremanDatabasePoolEnv" $root.Values.foreman.databasePools.utility | nindent 16 }}
+              resources:
+                {{- toYaml $root.Values.foreman.resources | nindent 16 }}
+              volumeMounts:
+                {{- include "foreman-stack.foremanVolumeMounts" $root | nindent 16 }}
+          volumes:
+            {{- include "foreman-stack.foremanVolumes" $root | nindent 12 }}
+{{- end }}
+{{- end }}
