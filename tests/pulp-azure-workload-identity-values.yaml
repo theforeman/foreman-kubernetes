@@ -1,0 +1,8 @@
+pulp:
+  serviceAccount:
+    annotations:
+      azure.workload.identity/client-id: 11111111-2222-3333-4444-555555555555
+    podLabels:
+      azure.workload.identity/use: "true"
+    podAnnotations:
+      azure.workload.identity/service-account-token-expiration: "3600"
