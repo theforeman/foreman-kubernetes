@@ -1,0 +1,20 @@
+{{- if .Values.monitoring.serviceMonitor.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "foreman-release-operator.fullname" . }}
+  {{- $labels := mergeOverwrite (include "foreman-release-operator.labels" . | fromYaml) .Values.monitoring.serviceMonitor.labels }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "foreman-release-operator.selectorLabels" . | nindent 6 }}
+  endpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      interval: {{ .Values.monitoring.serviceMonitor.interval | quote }}
+      scrapeTimeout: {{ .Values.monitoring.serviceMonitor.scrapeTimeout | quote }}
+      honorLabels: false
+{{- end }}

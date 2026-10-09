@@ -1,0 +1,108 @@
+{{- if .Values.monitoring.grafanaDashboard.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "foreman-release-operator.fullname" . }}-dashboard
+  {{- $labels := mergeOverwrite (include "foreman-release-operator.labels" . | fromYaml) .Values.monitoring.grafanaDashboard.labels }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+data:
+  foreman-release-operator.json: |-
+    {
+      "annotations": {"list": []},
+      "editable": true,
+      "graphTooltip": 1,
+      "panels": [
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "red", "text": "Unavailable"}, "1": {"color": "green", "text": "Ready"}}, "type": "value"}], "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "green", "value": 1}]}}, "overrides": []},
+          "gridPos": {"h": 5, "w": 6, "x": 0, "y": 0},
+          "id": 1,
+          "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "textMode": "auto"},
+          "targets": [{"expr": "max(foreman_release_controller_ready)", "refId": "A"}],
+          "title": "Controller readiness",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {"defaults": {"decimals": 0}, "overrides": []},
+          "gridPos": {"h": 5, "w": 6, "x": 6, "y": 0},
+          "id": 2,
+          "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "textMode": "auto"},
+          "targets": [{"expr": "sum(foreman_release_controller_leader)", "refId": "A"}],
+          "title": "Active leaders",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {"defaults": {"decimals": 0}, "overrides": []},
+          "gridPos": {"h": 5, "w": 6, "x": 12, "y": 0},
+          "id": 3,
+          "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "textMode": "auto"},
+          "targets": [{"expr": "sum(foreman_release_status{phase=\"Blocked\"})", "refId": "A"}],
+          "title": "Blocked releases",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {"defaults": {"decimals": 0}, "overrides": []},
+          "gridPos": {"h": 5, "w": 6, "x": 18, "y": 0},
+          "id": 4,
+          "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "textMode": "auto"},
+          "targets": [{"expr": "sum(foreman_release_metadata_generation - foreman_release_observed_generation)", "refId": "A"}],
+          "title": "Generation gap",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {"defaults": {"unit": "ops"}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 5},
+          "id": 5,
+          "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "multi"}},
+          "targets": [{"expr": "sum by (result) (rate(foreman_release_controller_cycles_total[5m]))", "legendFormat": "{{ "{{" }}result{{ "}}" }}", "refId": "A"}],
+          "title": "Controller cycles",
+          "type": "timeseries"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {"defaults": {}, "overrides": []},
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 5},
+          "id": 6,
+          "options": {"showHeader": true},
+          "targets": [{"expr": "max by (namespace, name, phase) (foreman_release_status)", "format": "table", "instant": true, "refId": "A"}],
+          "title": "Release phases",
+          "transformations": [{"id": "organize", "options": {"excludeByName": {"Time": true, "Value": true}, "renameByName": {"name": "Release", "namespace": "Namespace", "phase": "Phase"}}}],
+          "type": "table"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {"defaults": {"mappings": [{"options": {"0": {"color": "red", "text": "Failed"}, "1": {"color": "green", "text": "Healthy"}}, "type": "value"}]}, "overrides": []},
+          "gridPos": {"h": 5, "w": 24, "x": 0, "y": 13},
+          "id": 7,
+          "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "textMode": "auto"},
+          "targets": [{"expr": "min by (namespace, name) (foreman_release_drift_check_healthy)", "refId": "A"}],
+          "title": "Ready drift audits",
+          "type": "stat"
+        },
+        {
+          "datasource": {"type": "prometheus", "uid": "${datasource}"},
+          "fieldConfig": {"defaults": {"decimals": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "red"}, {"color": "orange", "value": 1}, {"color": "green", "value": 7}]}, "unit": "d"}, "overrides": []},
+          "gridPos": {"h": 5, "w": 24, "x": 0, "y": 18},
+          "id": 8,
+          "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"], "values": false}, "textMode": "auto"},
+          "targets": [{"expr": "(min by (namespace, name) (foreman_release_certificate_expiry_timestamp_seconds) - time()) / 86400", "refId": "A"}],
+          "title": "Earliest certificate lifetime",
+          "type": "stat"
+        }
+      ],
+      "refresh": "30s",
+      "schemaVersion": 39,
+      "tags": ["foreman", "release-controller"],
+      "templating": {"list": [{"current": {}, "label": "Prometheus", "name": "datasource", "query": "prometheus", "type": "datasource"}]},
+      "time": {"from": "now-6h", "to": "now"},
+      "timezone": "browser",
+      "title": "Foreman Release Controller",
+      "uid": "foreman-release-controller",
+      "version": 1
+    }
+{{- end }}
