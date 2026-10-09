@@ -1,0 +1,77 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "foreman-execution-proxy.fullname" . }}-config
+  labels:
+    {{- include "foreman-execution-proxy.labels" . | nindent 4 }}
+data:
+  settings.yml: |
+    ---
+    :settings_directory: /etc/foreman-proxy/settings.d
+    :foreman_url: {{ .Values.proxy.foremanUrl | quote }}
+    :trusted_hosts:
+      {{- range .Values.proxy.trustedHosts }}
+      - {{ . | quote }}
+      {{- end }}
+    :https_port: {{ .Values.proxy.service.port }}
+    :ssl_ca_file: /etc/foreman-proxy/ssl_ca.pem
+    :ssl_certificate: /etc/foreman-proxy/ssl_cert.pem
+    :ssl_private_key: /etc/foreman-proxy/ssl_key.pem
+    :foreman_ssl_ca: /etc/foreman-proxy/foreman_ssl_ca.pem
+    :foreman_ssl_cert: /etc/foreman-proxy/foreman_ssl_cert.pem
+    :foreman_ssl_key: /etc/foreman-proxy/foreman_ssl_key.pem
+    :bind_host:
+      - "*"
+    :tls_min_version: {{ .Values.proxy.tlsMinVersion | quote }}
+    :log_level: {{ .Values.proxy.logLevel }}
+    :log_file: STDOUT
+    :log_buffer: 2000
+    :log_buffer_errors: 1000
+  dynflow.yml: |
+    ---
+    :enabled: https
+    :database: /var/lib/foreman-proxy/dynflow/dynflow.sqlite
+    :console_auth: true
+    :execution_plan_cleaner_age: 1800
+  remote_execution_ssh.yml: |
+    ---
+    :enabled: https
+    :ssh_identity_key_file: /var/run/foreman-proxy/ssh/id_rsa_foreman_proxy
+    :ssh_user: {{ .Values.ssh.user | quote }}
+    :local_working_dir: /var/lib/foreman-proxy/rex
+    :remote_working_dir: {{ .Values.ssh.remoteWorkingDir | quote }}
+    :socket_working_dir: /var/lib/foreman-proxy/sockets
+    :cockpit_integration: false
+    :mode: ssh
+    :cleanup_working_dirs: {{ .Values.ssh.cleanupWorkingDirs }}
+    {{- if .Values.ssh.userCertificate.enabled }}
+    :ssh_user_ca_public_key_file: /var/run/foreman-proxy/ssh/ssh-user-ca.pub
+    {{- end }}
+    {{- if .Values.ssh.hostKeyVerification.enabled }}
+    :ssh_ca_known_hosts_file: /etc/foreman-proxy/ssh-host-keys/known_hosts
+    {{- end }}
+  ansible.yml: |
+    ---
+    :enabled: https
+    :ansible_dir: /usr/share/foreman-proxy
+    :ansible_environment_file: /etc/foreman-proxy/ansible.env
+    :working_dir: /var/lib/foreman-proxy/ansible-runner
+  ansible.env: |
+    export ANSIBLE_CALLBACKS_ENABLED="theforeman.foreman.foreman"
+    export ANSIBLE_LOCAL_TEMP="/tmp/ansible"
+    export ANSIBLE_HOME="/tmp/ansible-home"
+    export ANSIBLE_ROLES_PATH="/etc/ansible/roles:/usr/share/ansible/roles"
+    export ANSIBLE_COLLECTIONS_PATH="/etc/ansible/collections:/usr/share/ansible/collections"
+    export FOREMAN_URL={{ .Values.proxy.foremanUrl | quote }}
+    export FOREMAN_SSL_CERT="/etc/foreman-proxy/foreman_ssl_cert.pem"
+    export FOREMAN_SSL_KEY="/etc/foreman-proxy/foreman_ssl_key.pem"
+    export FOREMAN_SSL_VERIFY="/etc/foreman-proxy/foreman_ssl_ca.pem"
+    {{- if .Values.ssh.hostKeyVerification.enabled }}
+    export ANSIBLE_HOST_KEY_CHECKING="True"
+    export ANSIBLE_SSH_ARGS="-C -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15 -o ServerAliveCountMax=3 -o UserKnownHostsFile=/etc/foreman-proxy/ssh-host-keys/known_hosts -o StrictHostKeyChecking=yes"
+    {{- else }}
+    export ANSIBLE_HOST_KEY_CHECKING="False"
+    export ANSIBLE_SSH_ARGS="-C -o ControlMaster=auto -o ControlPersist=60s -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
+    {{- end }}
+  check-features.rb: |
+{{ .Files.Get "files/check-features.rb" | indent 4 }}

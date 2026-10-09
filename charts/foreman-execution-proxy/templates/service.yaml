@@ -1,0 +1,28 @@
+{{- if .Values.serviceAccount.create }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "foreman-execution-proxy.serviceAccountName" . }}
+  labels:
+    {{- include "foreman-execution-proxy.labels" . | nindent 4 }}
+automountServiceAccountToken: false
+---
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "foreman-execution-proxy.fullname" . }}
+  annotations:
+    foreman-kubernetes.io/certificate-secret: {{ .Values.proxy.existingTlsSecret | quote }}
+    foreman-kubernetes.io/certificate-key: "tls.crt"
+    foreman-kubernetes.io/certificate-dns-name: {{ include "foreman-execution-proxy.fullname" . | quote }}
+  labels:
+    {{- include "foreman-execution-proxy.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "foreman-execution-proxy.selectorLabels" . | nindent 4 }}
+  ports:
+    - name: https
+      port: {{ .Values.proxy.service.port }}
+      targetPort: https

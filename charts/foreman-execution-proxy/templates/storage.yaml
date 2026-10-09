@@ -1,0 +1,41 @@
+{{- if not .Values.state.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "foreman-execution-proxy.stateClaimName" . }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "foreman-execution-proxy.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.state.accessMode }}
+  {{- with .Values.state.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.state.size }}
+{{- end }}
+{{- if and (not .Values.state.existingClaim) (not .Values.ansible.existingClaim) }}
+---
+{{- end }}
+{{- if not .Values.ansible.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "foreman-execution-proxy.ansibleClaimName" . }}
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "foreman-execution-proxy.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.ansible.accessMode }}
+  {{- with .Values.ansible.storageClass }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.ansible.size }}
+{{- end }}

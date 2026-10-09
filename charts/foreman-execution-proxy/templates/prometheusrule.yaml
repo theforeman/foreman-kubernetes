@@ -1,0 +1,50 @@
+{{- if and .Values.monitoring.prometheusRule.enabled (not .Values.maintenance.enabled) }}
+{{- $fullname := include "foreman-execution-proxy.fullname" . -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ $fullname }}
+  {{- $labels := mergeOverwrite (include "foreman-execution-proxy.labels" . | fromYaml) .Values.monitoring.prometheusRule.labels }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  groups:
+    - name: foreman-execution-proxy
+      rules:
+        - alert: ForemanExecutionProxyMetricsMissing
+          expr: absent(kube_deployment_spec_replicas{namespace={{ .Release.Namespace | quote }},deployment={{ $fullname | quote }}})
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Execution proxy workload metrics are missing
+            description: kube-state-metrics does not expose the execution proxy Deployment in namespace {{ .Release.Namespace }}.
+        - alert: ForemanExecutionProxyUnavailable
+          expr: >-
+            max(kube_deployment_spec_replicas{namespace={{ .Release.Namespace | quote }},deployment={{ $fullname | quote }}})
+            - max(kube_deployment_status_replicas_available{namespace={{ .Release.Namespace | quote }},deployment={{ $fullname | quote }}}) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Execution proxy is unavailable
+            description: The singleton execution proxy has no available replica; new Remote Execution and Ansible jobs cannot start.
+        - alert: ForemanExecutionProxyCrashLooping
+          expr: >-
+            max by (namespace, pod, container) (max_over_time(kube_pod_container_status_waiting_reason{namespace={{ .Release.Namespace | quote }},pod=~{{ printf "%s-.*" $fullname | quote }},reason="CrashLoopBackOff"}[10m])) > 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Execution proxy container is crash looping
+            description: Container {{ "{{" }} $labels.container {{ "}}" }} in {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.pod {{ "}}" }} is repeatedly failing to start.
+        - alert: ForemanExecutionProxyPersistentVolumeClaimPending
+          expr: >-
+            max by (namespace, persistentvolumeclaim, phase) (kube_persistentvolumeclaim_status_phase{namespace={{ .Release.Namespace | quote }},persistentvolumeclaim=~{{ printf "%s-(state|ansible)" $fullname | quote }},phase=~"Pending|Lost"}) > 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: Execution proxy persistent volume claim is unavailable
+            description: PVC {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.persistentvolumeclaim {{ "}}" }} remains in {{ "{{" }} $labels.phase {{ "}}" }}.
+{{- end }}
