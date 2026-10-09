@@ -1,0 +1,68 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: execution-ansible-content-loader
+  namespace: foreman
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app: execution-ansible-content-loader
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 991
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 991
+        runAsNonRoot: true
+        runAsUser: 991
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: load-role
+          image: foreman-kubernetes-ssh-target:test
+          imagePullPolicy: Never
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              rm -rf /content/*
+              install -d -m 0755 \
+                /content/roles/foreman_kubernetes_test/defaults \
+                /content/roles/foreman_kubernetes_test/meta \
+                /content/roles/foreman_kubernetes_test/tasks
+              install -m 0644 /source/ansible.cfg /content/ansible.cfg
+              install -m 0644 /source/defaults-main.yml \
+                /content/roles/foreman_kubernetes_test/defaults/main.yml
+              install -m 0644 /source/meta-main.yml \
+                /content/roles/foreman_kubernetes_test/meta/main.yml
+              install -m 0644 /source/tasks-main.yml \
+                /content/roles/foreman_kubernetes_test/tasks/main.yml
+          resources:
+            requests:
+              cpu: 5m
+              memory: 8Mi
+            limits:
+              memory: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: source
+              mountPath: /source
+              readOnly: true
+            - name: content
+              mountPath: /content
+      volumes:
+        - name: source
+          configMap:
+            name: execution-ansible-content
+        - name: content
+          persistentVolumeClaim:
+            claimName: execution-ansible-content
