@@ -1,0 +1,126 @@
+{{- if le (int .Values.controller.leaderLeaseDurationSeconds) (mul 2 (int .Values.controller.pollSeconds)) }}
+{{- fail "controller.leaderLeaseDurationSeconds must exceed twice controller.pollSeconds" }}
+{{- end }}
+{{- if le (int .Values.controller.releaseLeaseDurationSeconds) (mul 4 (int .Values.controller.commandTimeoutSeconds)) }}
+{{- fail "controller.releaseLeaseDurationSeconds must exceed four times controller.commandTimeoutSeconds" }}
+{{- end }}
+{{- if le (int .Values.controller.commandTimeoutSeconds) (int .Values.controller.commandTerminationGraceSeconds) }}
+{{- fail "controller.commandTimeoutSeconds must exceed controller.commandTerminationGraceSeconds" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "foreman-release-operator.fullname" . }}
+  labels:
+    {{- include "foreman-release-operator.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 1
+  selector:
+    matchLabels:
+      {{- include "foreman-release-operator.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-release-operator.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- include "foreman-release-operator.scheduling" . | nindent 6 }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    {{- include "foreman-release-operator.selectorLabels" . | nindent 20 }}
+      serviceAccountName: {{ include "foreman-release-operator.serviceAccountName" . }}
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: {{ .Values.controller.terminationGracePeriodSeconds }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: controller
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /opt/foreman-kubernetes/operator/bin/foreman-release-controller
+          env:
+            - name: FOREMAN_KUBERNETES_ROOT
+              value: /opt/foreman-kubernetes
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_UID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: POLL_SECONDS
+              value: {{ .Values.controller.pollSeconds | quote }}
+            - name: COMMAND_TIMEOUT_SECONDS
+              value: {{ .Values.controller.commandTimeoutSeconds | quote }}
+            - name: COMMAND_TERMINATION_GRACE_SECONDS
+              value: {{ .Values.controller.commandTerminationGraceSeconds | quote }}
+            - name: CERTIFICATE_MINIMUM_VALIDITY_SECONDS
+              value: {{ .Values.controller.certificateMinimumValiditySeconds | quote }}
+            - name: HEALTH_PORT
+              value: {{ .Values.health.port | quote }}
+            - name: READINESS_MAX_STALENESS_SECONDS
+              value: {{ .Values.health.readinessMaxStalenessSeconds | quote }}
+            - name: RELEASE_LEASE_DURATION_SECONDS
+              value: {{ .Values.controller.releaseLeaseDurationSeconds | quote }}
+            - name: LEADER_LEASE_NAME
+              value: {{ .Values.controller.leaderLeaseName | quote }}
+            - name: LEADER_LEASE_DURATION_SECONDS
+              value: {{ .Values.controller.leaderLeaseDurationSeconds | quote }}
+            - name: HOME
+              value: /tmp
+          ports:
+            - name: health
+              containerPort: {{ .Values.health.port }}
+              protocol: TCP
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: health
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: health
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 64Mi
