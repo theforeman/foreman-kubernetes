@@ -1,0 +1,117 @@
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: foreman-kind-object-storage
+spec:
+  capacity:
+    storage: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: foreman-kind-object-storage
+  hostPath:
+    path: /var/local/foreman-kind-object-storage
+    type: DirectoryOrCreate
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: object-storage
+  namespace: foreman
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: foreman-kind-object-storage
+  volumeName: foreman-kind-object-storage
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: object-storage
+  namespace: foreman
+spec:
+  selector:
+    app: object-storage
+  ports:
+    - name: s3
+      port: 8333
+      targetPort: s3
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: object-storage
+  namespace: foreman
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: object-storage
+  template:
+    metadata:
+      labels:
+        app: object-storage
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: seaweedfs
+          image: chrislusf/seaweedfs:4.47@sha256:ce9e796f1fe6f06968f4c04bdaf8f678dad9c8acdfef3d244133d71bfa6bf882
+          args:
+            - mini
+            - -dir=/data
+            - -ip.bind=0.0.0.0
+            - -s3.port=8333
+          env:
+            - name: AWS_ACCESS_KEY_ID
+              value: foreman-pulp-test
+            - name: AWS_SECRET_ACCESS_KEY
+              value: foreman-pulp-secret-test
+            - name: S3_BUCKET
+              value: foreman-pulp-probe
+          ports:
+            - name: s3
+              containerPort: 8333
+          startupProbe:
+            tcpSocket:
+              port: s3
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            tcpSocket:
+              port: s3
+            periodSeconds: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: false
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: object-storage
