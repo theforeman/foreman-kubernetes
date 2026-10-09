@@ -1,0 +1,39 @@
+# Overlay after cluster-values.yaml to replace the shared Pulp filesystem with
+# S3 or an S3-compatible object store.
+pulp:
+  serviceAccount:
+    annotations:
+      # Omit this annotation when using static credentials or a different cloud.
+      eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/foreman-pulp
+  storage:
+    backend: s3
+    s3:
+      bucket: foreman-pulp
+      location: production
+      region: eu-central-1
+      # Leave empty for AWS S3. Set the complete origin for MinIO, Ceph RGW,
+      # or another S3-compatible service.
+      endpointUrl: https://s3.example.test
+      addressingStyle: path
+      signatureVersion: s3v4
+      redirectToObjectStorage: true
+      # Leave empty when workload identity supplies credentials.
+      existingSecret: pulp-object-storage
+      accessKeySecretKey: access-key-id
+      secretKeySecretKey: secret-access-key
+      sessionTokenSecretKey: ""
+      existingCaSecret: pulp-object-storage-ca
+      caSecretKey: ca.crt
+
+# Restricted egress must identify the object-store endpoint. Standard
+# NetworkPolicy cannot resolve the hostname above, so use stable CIDRs or
+# namespace/pod selectors appropriate for the deployment.
+networkPolicy:
+  egress:
+    external:
+      pulp:
+        peers:
+          - ipBlock:
+              cidr: 203.0.113.10/32
+        ports:
+          - 443
