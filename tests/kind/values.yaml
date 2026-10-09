@@ -1,0 +1,139 @@
+platform:
+  fqdn: foreman.test
+  domain: test
+  externalUrl: https://foreman.test
+  trustedProxies:
+    - 10.0.0.0/8
+
+ingress:
+  enabled: true
+  className: nginx
+  foreman:
+    host: foreman.test
+    tlsSecret: foreman-ingress-tls
+    clientCaSecret: ingress-client-ca
+  pulpContent:
+    host: content.test
+    tlsSecret: pulp-content-ingress-tls
+    clientCaSecret: ingress-client-ca
+
+valkey:
+  tls:
+    enabled: false
+    existingCaSecret: ""
+  foremanCache:
+    host: valkey
+  dynflow:
+    host: valkey
+  pulp:
+    host: valkey
+
+foreman:
+  replicas: 1
+  pluginPolicy:
+    allowUnverified: true
+  enabledPlugins:
+    - foreman-tasks
+    - katello
+    - foreman_remote_execution
+    - foreman_ansible
+    - foreman_webhooks
+    - foreman_virt_who_configure
+    - foreman_kubevirt
+  puma:
+    # The integration profile loads every packaged plugin exercised below.
+    # Keep headroom for dependency-aware health requests while one web Pod is
+    # draining; a pool equal to Puma concurrency can be exhausted by plugin
+    # health checks and return HTTP 500 during the availability drill.
+    threadsMin: 5
+    threadsMax: 5
+  databasePools:
+    web: 10
+  existingDatabaseCaSecret: ""
+  database:
+    sslMode: disable
+  sharedTmp:
+    existingClaim: foreman-tmp
+  avatarStorage:
+    existingClaim: foreman-avatars
+  dynflow:
+    workers: 1
+    workerConcurrency: 2
+    hostsQueueWorkers: 1
+    hostsQueueConcurrency: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 3Gi
+
+candlepin:
+  replicas: 1
+  existingDatabaseCaSecret: ""
+  database:
+    host: postgresql
+    port: 5432
+    name: candlepin
+    user: candlepin
+    sslMode: disable
+  java:
+    xms: 512m
+    xmx: 2g
+  resources:
+    requests:
+      cpu: 100m
+      memory: 768Mi
+    limits:
+      memory: 2500Mi
+
+pulp:
+  existingDatabaseCaSecret: ""
+  enabledPlugins:
+    - pulp_certguard
+    - pulp_container
+    - pulp_deb
+    - pulp_file
+    - pulp_python
+    - pulp_rpm
+    - pulp_smart_proxy
+  database:
+    host: postgresql
+    port: 5432
+    name: pulp
+    user: pulp
+    sslMode: disable
+  contentOrigin: https://content.test
+  api:
+    replicas: 1
+    gunicornWorkers: 1
+  content:
+    replicas: 1
+    gunicornWorkers: 1
+  workers:
+    replicas: 1
+  storage:
+    existingClaim: pulp-data
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+podDisruptionBudget:
+  enabled: false
+
+recovery:
+  image:
+    repository: foreman-kubernetes-recovery-toolbox
+    tag: test
+    pullPolicy: Never
+    allowMutableTagForTesting: true
+  repository:
+    existingClaim: recovery-repository
+  extraSecretNames:
+    - recovery-probe
+    - foreman-execution-proxy-tls
+    - foreman-execution-proxy-foreman-client
+    - foreman-execution-proxy-ssh
