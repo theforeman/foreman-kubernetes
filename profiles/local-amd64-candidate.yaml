@@ -1,0 +1,27 @@
+# Local qualification only. These images contain unpublished upstream commits
+# recorded by compatibility/local-candidate-images.json and are never eligible
+# for release-set promotion.
+platform:
+  compatibilitySet: nightly-candidate-2026-09-24
+
+scheduling:
+  nodeSelector:
+    kubernetes.io/arch: amd64
+
+foreman:
+  image:
+    repository: foreman-kubernetes/foreman
+    tag: candidate
+    pullPolicy: Never
+
+candlepin:
+  image:
+    repository: foreman-kubernetes/candlepin
+    tag: candidate
+    pullPolicy: Never
+
+pulp:
+  image:
+    repository: foreman-kubernetes/pulp
+    tag: candidate
+    pullPolicy: Never
