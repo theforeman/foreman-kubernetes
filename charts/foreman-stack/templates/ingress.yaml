@@ -1,0 +1,206 @@
+{{- if .Values.ingress.enabled }}
+{{- $foremanAnnotations := mergeOverwrite (deepCopy .Values.ingress.foreman.annotations) (dict
+  "foreman-kubernetes.io/required-ingress-controller" .Values.ingress.controller
+  "nginx.ingress.kubernetes.io/auth-tls-secret" (printf "%s/%s" .Release.Namespace .Values.ingress.foreman.clientCaSecret)
+  "nginx.ingress.kubernetes.io/auth-tls-verify-client" "optional"
+  "nginx.ingress.kubernetes.io/auth-tls-verify-depth" "3"
+  "nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream" "true"
+  "nginx.ingress.kubernetes.io/proxy-set-headers" (printf "%s/%s" .Release.Namespace (include "foreman-stack.foremanClientHeadersName" .))
+  "nginx.ingress.kubernetes.io/proxy-body-size" "0"
+  "nginx.ingress.kubernetes.io/proxy-read-timeout" "900"
+) -}}
+{{- $pulpAnnotations := mergeOverwrite (deepCopy .Values.ingress.pulpContent.annotations) (dict
+  "foreman-kubernetes.io/required-ingress-controller" .Values.ingress.controller
+  "nginx.ingress.kubernetes.io/auth-tls-secret" (printf "%s/%s" .Release.Namespace .Values.ingress.pulpContent.clientCaSecret)
+  "nginx.ingress.kubernetes.io/auth-tls-verify-client" "optional"
+  "nginx.ingress.kubernetes.io/auth-tls-verify-depth" "3"
+  "nginx.ingress.kubernetes.io/auth-tls-pass-certificate-to-upstream" "true"
+  "nginx.ingress.kubernetes.io/proxy-body-size" "0"
+  "nginx.ingress.kubernetes.io/proxy-read-timeout" "600"
+) -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "foreman-stack.foremanClientHeadersName" . }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman-edge") | nindent 4 }}
+data:
+  SSL-CLIENT-CERT: $ssl_client_escaped_cert
+  SSL-CLIENT-S-DN: $ssl_client_s_dn
+  SSL-CLIENT-VERIFY: $ssl_client_verify
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "foreman-stack.pulpContentHeadersName" . }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-content-edge") | nindent 4 }}
+data:
+  X-CLIENT-CERT: $ssl_client_escaped_cert
+  REMOTE-USER: ""
+  REMOTE_USER: ""
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "foreman-stack.pulpPublicApiHeadersName" . }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-content-edge") | nindent 4 }}
+data:
+  X-CLIENT-CERT: ""
+  REMOTE-USER: ""
+  REMOTE_USER: ""
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-foreman
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman-edge") | nindent 4 }}
+  annotations:
+    {{- toYaml $foremanAnnotations | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.foreman.host }}
+      secretName: {{ .Values.ingress.foreman.tlsSecret }}
+  rules:
+    - host: {{ .Values.ingress.foreman.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "foreman-stack.fullname" . }}-foreman
+                port:
+                  number: {{ .Values.foreman.service.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-pulp-content
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-content-edge") | nindent 4 }}
+  annotations:
+    {{- toYaml (mergeOverwrite (deepCopy $pulpAnnotations) (dict "nginx.ingress.kubernetes.io/proxy-set-headers" (printf "%s/%s" .Release.Namespace (include "foreman-stack.pulpContentHeadersName" .)))) | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.pulpContent.host }}
+      secretName: {{ .Values.ingress.pulpContent.tlsSecret }}
+  rules:
+    - host: {{ .Values.ingress.pulpContent.host }}
+      http:
+        paths:
+          - path: /pulp/content
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "foreman-stack.pulpContentServiceName" . }}
+                port:
+                  number: {{ .Values.pulp.content.port }}
+          {{- if has "pulp_container" .Values.pulp.enabledPlugins }}
+          - path: /pulp/container
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "foreman-stack.pulpContentServiceName" . }}
+                port:
+                  number: {{ .Values.pulp.content.port }}
+          {{- end }}
+          {{- if has "pulp_deb" .Values.pulp.enabledPlugins }}
+          - path: /pulp/deb
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "foreman-stack.pulpContentServiceName" . }}
+                port:
+                  number: {{ .Values.pulp.content.port }}
+          {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-pulp-api-assets
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-content-edge") | nindent 4 }}
+  annotations:
+    {{- toYaml (mergeOverwrite (deepCopy $pulpAnnotations) (dict "nginx.ingress.kubernetes.io/proxy-set-headers" (printf "%s/%s" .Release.Namespace (include "foreman-stack.pulpPublicApiHeadersName" .)))) | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.pulpContent.host }}
+      secretName: {{ .Values.ingress.pulpContent.tlsSecret }}
+  rules:
+    - host: {{ .Values.ingress.pulpContent.host }}
+      http:
+        paths:
+          {{- if has "pulp_ansible" .Values.pulp.enabledPlugins }}
+          - path: /pulp_ansible/galaxy
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "foreman-stack.pulpApiServiceName" . }}
+                port:
+                  number: {{ .Values.pulp.api.port }}
+          {{- end }}
+          {{- if has "pulp_python" .Values.pulp.enabledPlugins }}
+          - path: /pypi
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "foreman-stack.pulpApiServiceName" . }}
+                port:
+                  number: {{ .Values.pulp.api.port }}
+          {{- end }}
+          - path: /pulp/assets
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "foreman-stack.pulpApiServiceName" . }}
+                port:
+                  number: {{ .Values.pulp.api.port }}
+          {{- if has "pulp_container" .Values.pulp.enabledPlugins }}
+          - path: /v2
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "foreman-stack.pulpApiServiceName" . }}
+                port:
+                  number: {{ .Values.pulp.api.port }}
+          {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-pulp-isos
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-content-edge") | nindent 4 }}
+  annotations:
+    {{- toYaml (mergeOverwrite (deepCopy $pulpAnnotations) (dict
+      "nginx.ingress.kubernetes.io/proxy-set-headers" (printf "%s/%s" .Release.Namespace (include "foreman-stack.pulpContentHeadersName" .))
+      "nginx.ingress.kubernetes.io/use-regex" "true"
+      "nginx.ingress.kubernetes.io/rewrite-target" "/pulp/content/$2"
+    )) | nindent 4 }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  tls:
+    - hosts:
+        - {{ .Values.ingress.pulpContent.host }}
+      secretName: {{ .Values.ingress.pulpContent.tlsSecret }}
+  rules:
+    - host: {{ .Values.ingress.pulpContent.host }}
+      http:
+        paths:
+          - path: /pulp/isos(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: {{ include "foreman-stack.pulpContentServiceName" . }}
+                port:
+                  number: {{ .Values.pulp.content.port }}
+{{- end }}

@@ -1,0 +1,451 @@
+{{- if and .Values.networkPolicy.enabled .Values.networkPolicy.egress.enabled }}
+{{- if eq (len .Values.networkPolicy.egress.database.peers) 0 }}
+{{- fail "networkPolicy.egress.database.peers must identify the externally managed PostgreSQL endpoints" }}
+{{- end }}
+{{- if eq (len .Values.networkPolicy.egress.valkey.peers) 0 }}
+{{- fail "networkPolicy.egress.valkey.peers must identify the externally managed Valkey endpoint" }}
+{{- end }}
+{{- $root := . }}
+{{- $database := .Values.networkPolicy.egress.database }}
+{{- $valkey := .Values.networkPolicy.egress.valkey }}
+{{- $outboundProxy := .Values.networkPolicy.egress.outboundProxy }}
+{{- $dns := .Values.networkPolicy.egress.dns }}
+{{- $recovery := .Values.networkPolicy.egress.recovery }}
+{{- $foremanExternal := .Values.networkPolicy.egress.external.foreman }}
+{{- $pulpExternal := .Values.networkPolicy.egress.external.pulp }}
+{{- $smtpExternal := .Values.networkPolicy.egress.external.smtp }}
+{{- $webhooksExternal := .Values.networkPolicy.egress.external.webhooks }}
+{{- $computeProvidersExternal := .Values.networkPolicy.egress.external.computeProviders }}
+{{- $computeProviderEnabled := or (has "foreman_google" .Values.foreman.enabledPlugins) (has "foreman_azure_rm" .Values.foreman.enabledPlugins) (has "foreman_kubevirt" .Values.foreman.enabledPlugins) (has "foreman_rh_cloud" .Values.foreman.enabledPlugins) }}
+{{- if and .Values.outboundProxy.enabled (eq (len $outboundProxy.peers) 0) }}
+{{- fail "networkPolicy.egress.outboundProxy.peers must identify the HTTP proxy when outboundProxy is enabled" }}
+{{- end }}
+{{- if and (eq .Values.pulp.storage.backend "s3") (eq (len $pulpExternal.peers) 0) (not .Values.outboundProxy.enabled) }}
+{{- fail "networkPolicy.egress.external.pulp.peers or outboundProxy must identify the S3 route when Pulp object storage is enabled" }}
+{{- end }}
+{{- if and .Values.foreman.email.enabled (eq (len $smtpExternal.peers) 0) }}
+{{- fail "networkPolicy.egress.external.smtp.peers must identify the SMTP relay when email is enabled" }}
+{{- end }}
+{{- if and (has "foreman_webhooks" .Values.foreman.enabledPlugins) (eq (len $webhooksExternal.peers) 0) (not .Values.outboundProxy.enabled) }}
+{{- fail "networkPolicy.egress.external.webhooks.peers or outboundProxy must identify the webhook delivery route when foreman_webhooks is enabled" }}
+{{- end }}
+{{- if and $computeProviderEnabled (eq (len $computeProvidersExternal.peers) 0) (not .Values.outboundProxy.enabled) }}
+{{- fail "networkPolicy.egress.external.computeProviders.peers or outboundProxy must identify the provider API route when a compute-provider plugin is enabled" }}
+{{- end }}
+{{- if and (or .Values.backup.enabled .Values.restore.enabled) (eq (len $recovery.apiServer.peers) 0) }}
+{{- fail "networkPolicy.egress.recovery.apiServer.peers must identify the Kubernetes API endpoint during backup or restore" }}
+{{- end }}
+{{- if and (or .Values.backup.enabled .Values.restore.enabled) (not .Values.recovery.repository.existingClaim) (eq (len $recovery.repository.peers) 0) }}
+{{- fail "networkPolicy.egress.recovery.repository.peers must identify the remote Restic endpoint during backup or restore" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-foreman-egress
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman-egress") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values: [{{ .Release.Name | quote }}]
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - foreman
+          - dynflow-orchestrator
+          - dynflow-worker
+          - dynflow-worker-hosts-queue
+          - foreman-cron
+          - foreman-migrate
+          - dependency-preflight
+          - pulp-registration
+          {{- if .Values.smartProxy.executionRegistration.enabled }}
+          - execution-proxy-registration
+          {{- end }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - {{- toYaml $dns | nindent 10 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        {{- toYaml $database.peers | nindent 8 }}
+      ports:
+        {{- range $database.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    - to:
+        {{- toYaml $valkey.peers | nindent 8 }}
+      ports:
+        {{- range $valkey.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- if .Values.outboundProxy.enabled }}
+    - to:
+        {{- toYaml $outboundProxy.peers | nindent 8 }}
+      ports:
+        {{- range $outboundProxy.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: candlepin
+      ports:
+        - protocol: TCP
+          port: {{ .Values.candlepin.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: pulp-control-proxy
+      ports:
+        - protocol: TCP
+          port: {{ .Values.pulp.controlProxy.port }}
+    {{- if .Values.smartProxy.executionRegistration.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Values.smartProxy.executionRegistration.releaseName }}
+              app.kubernetes.io/component: execution-proxy
+      ports:
+        - protocol: TCP
+          port: {{ .Values.smartProxy.executionRegistration.port }}
+    {{- end }}
+    {{- if gt (len $foremanExternal.peers) 0 }}
+    - to:
+        {{- toYaml $foremanExternal.peers | nindent 8 }}
+      ports:
+        {{- range $foremanExternal.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- if gt (len $smtpExternal.peers) 0 }}
+    - to:
+        {{- toYaml $smtpExternal.peers | nindent 8 }}
+      ports:
+        {{- range $smtpExternal.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- if and (has "foreman_webhooks" .Values.foreman.enabledPlugins) (gt (len $webhooksExternal.peers) 0) }}
+    - to:
+        {{- toYaml $webhooksExternal.peers | nindent 8 }}
+      ports:
+        {{- range $webhooksExternal.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- if and $computeProviderEnabled (gt (len $computeProvidersExternal.peers) 0) }}
+    - to:
+        {{- toYaml $computeProvidersExternal.peers | nindent 8 }}
+      ports:
+        {{- range $computeProvidersExternal.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-pulp-egress
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-egress") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values: [{{ .Release.Name | quote }}]
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - pulp-api
+          - pulp-content
+          - pulp-worker
+          - pulp-migrate
+          - dependency-preflight
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - {{- toYaml $dns | nindent 10 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        {{- toYaml $database.peers | nindent 8 }}
+      ports:
+        {{- range $database.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    - to:
+        {{- toYaml $valkey.peers | nindent 8 }}
+      ports:
+        {{- range $valkey.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- if .Values.outboundProxy.enabled }}
+    - to:
+        {{- toYaml $outboundProxy.peers | nindent 8 }}
+      ports:
+        {{- range $outboundProxy.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- if gt (len $pulpExternal.peers) 0 }}
+    - to:
+        {{- toYaml $pulpExternal.peers | nindent 8 }}
+      ports:
+        {{- range $pulpExternal.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-candlepin-egress
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "candlepin-egress") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values: [{{ .Release.Name | quote }}]
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - candlepin
+          - candlepin-migrate
+          - dependency-preflight
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - {{- toYaml $dns | nindent 10 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        {{- toYaml $database.peers | nindent 8 }}
+      ports:
+        {{- range $database.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.pulpControlProxyServiceName" . }}-egress
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-control-proxy-egress") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pulp-control-proxy
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - {{- toYaml $dns | nindent 10 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: pulp-api
+      ports:
+        - protocol: TCP
+          port: {{ .Values.pulp.api.port }}
+{{- if and .Values.smokeTest.enabled (not .Values.maintenance.enabled) }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-smoke-test-egress
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "smoke-test-egress") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: smoke-test
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - {{- toYaml $dns | nindent 10 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: foreman
+      ports:
+        - protocol: TCP
+          port: http
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: candlepin
+      ports:
+        - protocol: TCP
+          port: {{ .Values.candlepin.service.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: pulp-api
+      ports:
+        - protocol: TCP
+          port: {{ .Values.pulp.api.port }}
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: pulp-control-proxy
+      ports:
+        - protocol: TCP
+          port: {{ .Values.pulp.controlProxy.port }}
+{{- end }}
+{{- if and .Values.smokeTest.enabled (not .Values.maintenance.enabled) (eq .Values.pulp.storage.backend "s3") }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-pulp-object-storage-test-egress
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-object-storage-test-egress") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pulp-object-storage-test
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - {{- toYaml $dns | nindent 10 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    {{- if gt (len $pulpExternal.peers) 0 }}
+    - to:
+        {{- toYaml $pulpExternal.peers | nindent 8 }}
+      ports:
+        {{- range $pulpExternal.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- if .Values.outboundProxy.enabled }}
+    - to:
+        {{- toYaml $outboundProxy.peers | nindent 8 }}
+      ports:
+        {{- range $outboundProxy.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+{{- end }}
+{{- if or .Values.backup.enabled .Values.restore.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-recovery-egress
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "recovery-egress") | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values: [{{ .Release.Name | quote }}]
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - recovery-backup
+          - recovery-restore
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - {{- toYaml $dns | nindent 10 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        {{- toYaml $database.peers | nindent 8 }}
+      ports:
+        {{- range $database.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    - to:
+        {{- toYaml $recovery.apiServer.peers | nindent 8 }}
+      ports:
+        {{- range $recovery.apiServer.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- if .Values.outboundProxy.enabled }}
+    - to:
+        {{- toYaml $outboundProxy.peers | nindent 8 }}
+      ports:
+        {{- range $outboundProxy.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+    {{- if not .Values.recovery.repository.existingClaim }}
+    - to:
+        {{- toYaml $recovery.repository.peers | nindent 8 }}
+      ports:
+        {{- range $recovery.repository.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    {{- end }}
+{{- end }}
+{{- end }}

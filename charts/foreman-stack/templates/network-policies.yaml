@@ -1,0 +1,161 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- $root := . }}
+{{- $ingressController := dict
+  "namespaceSelector" .Values.networkPolicy.ingressController.namespaceSelector
+  "podSelector" .Values.networkPolicy.ingressController.podSelector
+-}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-default-deny-ingress
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "default-deny-ingress") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-foreman
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: foreman
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - {{- toYaml $ingressController | nindent 10 }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: smoke-test
+      ports:
+        - protocol: TCP
+          port: http
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-pulp-content
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-content") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pulp-content
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - {{- toYaml $ingressController | nindent 10 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.pulp.content.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-pulp-api
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-api") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pulp-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: pulp-control-proxy
+        - {{- toYaml $ingressController | nindent 10 }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: smoke-test
+      ports:
+        - protocol: TCP
+          port: {{ .Values.pulp.api.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.pulpControlProxyServiceName" . }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-control-proxy") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: pulp-control-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/instance
+                operator: In
+                values:
+                  - {{ .Release.Name }}
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - foreman
+                  - dynflow-orchestrator
+                  - dynflow-worker
+                  - dynflow-worker-hosts-queue
+                  - pulp-registration
+                  - smoke-test
+      ports:
+        - protocol: TCP
+          port: {{ .Values.pulp.controlProxy.port }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-candlepin
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "candlepin") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: candlepin
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/instance
+                operator: In
+                values:
+                  - {{ .Release.Name }}
+              - key: app.kubernetes.io/component
+                operator: In
+                values:
+                  - foreman
+                  - dynflow-orchestrator
+                  - dynflow-worker
+                  - dynflow-worker-hosts-queue
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: smoke-test
+      ports:
+        - protocol: TCP
+          port: {{ .Values.candlepin.service.port }}
+{{- end }}
