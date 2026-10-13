@@ -1,0 +1,199 @@
+{{- if and .Values.smokeTest.enabled (not .Values.maintenance.enabled) (eq .Values.pulp.storage.backend "s3") }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-pulp-object-storage-test
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp-object-storage-test") | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.smokeTest.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.pulpPodLabels" (dict "root" . "component" "pulp-object-storage-test") | nindent 8 }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      serviceAccountName: {{ include "foreman-stack.pulpServiceAccountName" . }}
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        fsGroup: 700
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 700
+        runAsNonRoot: true
+        runAsUser: 700
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: object-storage-test
+          image: {{ include "foreman-stack.image" .Values.pulp.image }}
+          imagePullPolicy: {{ .Values.pulp.image.pullPolicy }}
+          command:
+            - python3
+            - -c
+          args:
+            - |
+              import hashlib
+              import json
+              import os
+              import ssl
+              import urllib.request
+              import uuid
+
+              import django
+
+              django.setup()
+
+              from django.core.files.base import ContentFile
+              from django.core.files.storage import default_storage
+
+              block = b"foreman-kubernetes-object-storage\n"
+              payload_size = (9 * 1024 * 1024) + 1
+              payload = (block * ((payload_size // len(block)) + 1))[:payload_size]
+              object_name = "foreman-kubernetes-probe/%s" % uuid.uuid4().hex
+
+              bucket = default_storage.bucket
+              versioning = default_storage.connection.BucketVersioning(bucket.name)
+              versioning.enable()
+              versioning.reload()
+              if versioning.status != "Enabled":
+                  raise RuntimeError("bucket versioning is not enabled")
+
+              saved_name = default_storage.save(object_name, ContentFile(payload))
+              stored_key = "/".join(filter(None, [
+                  default_storage.location.strip("/"),
+                  saved_name,
+              ]))
+              client = bucket.meta.client
+              try:
+                  with default_storage.open(saved_name, "rb") as stored:
+                      restored = stored.read()
+                  if restored != payload:
+                      raise RuntimeError("object content changed during round trip")
+                  if default_storage.size(saved_name) != payload_size:
+                      raise RuntimeError("object size changed during round trip")
+
+                  direct_download = False
+                  if os.environ.get("PULP_REDIRECT_TO_OBJECT_STORAGE", "false").lower() == "true":
+                      ca_bundle = os.environ.get("AWS_CA_BUNDLE")
+                      context = ssl.create_default_context(cafile=ca_bundle) if ca_bundle else None
+                      with urllib.request.urlopen(
+                          default_storage.url(saved_name),
+                          timeout=60,
+                          context=context,
+                      ) as response:
+                          direct_payload = response.read()
+                      if direct_payload != payload:
+                          raise RuntimeError("signed object-storage download changed content")
+                      direct_download = True
+
+                  digest = hashlib.sha256(restored).hexdigest()
+                  initial_versions = client.list_object_versions(
+                      Bucket=bucket.name,
+                      Prefix=stored_key,
+                  ).get("Versions", [])
+                  recovery_version = next(
+                      (
+                          version
+                          for version in initial_versions
+                          if version["Key"] == stored_key and version.get("IsLatest")
+                      ),
+                      None,
+                  )
+                  if not recovery_version:
+                      raise RuntimeError("exact object-storage recovery version is missing")
+                  recovery_version_id = recovery_version["VersionId"]
+
+                  client.put_object(
+                      Bucket=bucket.name,
+                      Key=stored_key,
+                      Body=b"newer-state-that-must-not-survive-recovery",
+                  )
+                  default_storage.delete(saved_name)
+                  if default_storage.exists(saved_name):
+                      raise RuntimeError("versioned delete did not hide the object")
+
+                  versions = client.list_object_versions(
+                      Bucket=bucket.name,
+                      Prefix=stored_key,
+                  )
+                  object_versions = versions.get("Versions", [])
+                  delete_markers = versions.get("DeleteMarkers", [])
+                  if len(object_versions) < 2 or not delete_markers:
+                      raise RuntimeError("versioned write/delete history is incomplete")
+
+                  client.copy_object(
+                      Bucket=bucket.name,
+                      Key=stored_key,
+                      CopySource={
+                          "Bucket": bucket.name,
+                          "Key": stored_key,
+                          "VersionId": recovery_version_id,
+                      },
+                  )
+                  with default_storage.open(saved_name, "rb") as recovered:
+                      recovered_payload = recovered.read()
+                  if recovered_payload != payload:
+                      raise RuntimeError("exact object-storage version recovery changed content")
+
+                  print(json.dumps({
+                      "backend": type(default_storage._wrapped).__name__,
+                      "bucket": bucket.name,
+                      "location": default_storage.location,
+                      "bytes": payload_size,
+                      "sha256": digest,
+                      "objectVersions": len(object_versions),
+                      "deleteMarkers": len(delete_markers),
+                      "directDownload": direct_download,
+                      "recoveredFromVersion": recovery_version_id,
+                      "versionRecoverySha256": hashlib.sha256(recovered_payload).hexdigest(),
+                  }, sort_keys=True))
+              finally:
+                  versions = bucket.meta.client.list_object_versions(
+                      Bucket=bucket.name,
+                      Prefix=stored_key,
+                  )
+                  objects = [
+                      {"Key": item["Key"], "VersionId": item["VersionId"]}
+                      for group in ("Versions", "DeleteMarkers")
+                      for item in versions.get(group, [])
+                  ]
+                  if objects:
+                      bucket.meta.client.delete_objects(
+                          Bucket=bucket.name,
+                          Delete={"Objects": objects, "Quiet": True},
+                      )
+          env:
+            - name: HOME
+              value: /tmp
+            - name: DJANGO_SETTINGS_MODULE
+              value: pulpcore.app.settings
+            {{- include "foreman-stack.pulpEnv" . | nindent 12 }}
+            {{- include "foreman-stack.pulpObjectStorageCredentialEnv" . | nindent 12 }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 700 "runAsGroup" 700) | nindent 12 }}
+          resources:
+            {{- toYaml .Values.pulp.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "foreman-stack.pulpStorageVolumeMount" . | nindent 12 }}
+            - name: pulp-config
+              mountPath: /etc/pulp/certs/database_fields.symmetric.key
+              subPath: database_fields.symmetric.key
+              readOnly: true
+            {{- include "foreman-stack.pulpDatabaseCaVolumeMount" . | nindent 12 }}
+            {{- include "foreman-stack.pulpValkeyCaVolumeMount" . | nindent 12 }}
+            {{- include "foreman-stack.pulpObjectStorageCaVolumeMount" . | nindent 12 }}
+      volumes:
+        {{- include "foreman-stack.pulpStorageVolume" . | nindent 8 }}
+        - name: pulp-config
+          secret:
+            secretName: {{ .Values.pulp.existingConfigSecret }}
+        {{- include "foreman-stack.pulpDatabaseCaVolume" . | nindent 8 }}
+        {{- include "foreman-stack.pulpValkeyCaVolume" . | nindent 8 }}
+        {{- include "foreman-stack.pulpObjectStorageCaVolume" . | nindent 8 }}
+{{- end }}
