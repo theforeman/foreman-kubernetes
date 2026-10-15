@@ -1,0 +1,22 @@
+pulp:
+  storage:
+    backend: s3
+    s3:
+      bucket: foreman-pulp
+
+networkPolicy:
+  egress:
+    enabled: true
+    database:
+      peers:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+    valkey:
+      peers:
+        - ipBlock:
+            cidr: 192.0.2.11/32
+      ports:
+        - 6379
+    external:
+      pulp:
+        peers: []
