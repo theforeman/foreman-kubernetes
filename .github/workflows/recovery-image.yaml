@@ -1,0 +1,87 @@
+name: Recovery toolbox image
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - recovery-v*
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  verify:
+    name: Verify ${{ matrix.platform }} image
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            suffix: amd64
+          - platform: linux/arm64
+            suffix: arm64
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Build runtime verification image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: images/recovery-toolbox
+          platforms: ${{ matrix.platform }}
+          load: true
+          push: false
+          tags: foreman-kubernetes-recovery-toolbox:verify-${{ matrix.suffix }}
+      - name: Verify recovery commands
+        run: |
+          docker run --rm --platform "${{ matrix.platform }}" "foreman-kubernetes-recovery-toolbox:verify-${{ matrix.suffix }}" sh -ec '
+            jq --version
+            kubectl version --client=true
+            pg_dump --version
+            pg_restore --version
+            restic version
+            sha256sum --help >/dev/null
+            cmp --help >/dev/null
+          '
+
+  publish:
+    name: Publish multi-platform image
+    needs: verify
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Resolve package name
+        id: image
+        shell: bash
+        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}/recovery-toolbox" >> "${GITHUB_OUTPUT}"
+      - uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        id: metadata
+        with:
+          images: ${{ steps.image.outputs.name }}
+          tags: |
+            type=match,pattern=recovery-v(.*),group=1
+            type=sha,prefix=sha-
+      - name: Publish recovery toolbox
+        id: publish
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: images/recovery-toolbox
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.tags }}
+          labels: ${{ steps.metadata.outputs.labels }}
+          cache-from: type=gha,scope=recovery-toolbox
+          cache-to: type=gha,mode=max,scope=recovery-toolbox
+          provenance: mode=max
+          sbom: true
+      - name: Write immutable reference
+        run: echo "${{ steps.image.outputs.name }}@${{ steps.publish.outputs.digest }}" >> "${GITHUB_STEP_SUMMARY}"
