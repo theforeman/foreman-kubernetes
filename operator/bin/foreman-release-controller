@@ -1,0 +1,101 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require 'pathname'
+
+root = Pathname.new(ENV.fetch('FOREMAN_KUBERNETES_ROOT', File.expand_path('../..', __dir__))).realpath
+$LOAD_PATH.unshift(root.join('operator/lib').to_s)
+
+require 'foreman_release/controller'
+require 'foreman_release/certificate_validator'
+require 'foreman_release/cluster_preflight'
+require 'foreman_release/controller_status'
+require 'foreman_release/event_recorder'
+require 'foreman_release/health_server'
+require 'foreman_release/kubernetes_client'
+require 'foreman_release/leader_elector'
+require 'foreman_release/lease_manager'
+require 'foreman_release/reconciler'
+require 'foreman_release/runtime_adapter'
+require 'foreman_release/state_machine'
+require 'foreman_release/status_publisher'
+
+namespace = ENV.fetch('POD_NAMESPACE')
+poll_seconds = Integer(ENV.fetch('POLL_SECONDS', '5'))
+lease_duration = Integer(ENV.fetch('RELEASE_LEASE_DURATION_SECONDS', '300'))
+command_timeout = Integer(ENV.fetch('COMMAND_TIMEOUT_SECONDS', '60'))
+command_termination_grace = Integer(ENV.fetch('COMMAND_TERMINATION_GRACE_SECONDS', '5'))
+certificate_minimum_validity = Integer(ENV.fetch('CERTIFICATE_MINIMUM_VALIDITY_SECONDS', '86400'))
+health_port = Integer(ENV.fetch('HEALTH_PORT', '9393'))
+readiness_max_staleness = Integer(ENV.fetch('READINESS_MAX_STALENESS_SECONDS', '180'))
+leader_lease_duration = Integer(ENV.fetch('LEADER_LEASE_DURATION_SECONDS', '30'))
+leader_lease_name = ENV.fetch('LEADER_LEASE_NAME', 'foreman-release-controller-leader')
+pod_uid = ENV.fetch('POD_UID')
+runner = ForemanRelease::CommandRunner.new(
+  timeout_seconds: command_timeout,
+  termination_grace_seconds: command_termination_grace
+)
+kubernetes = ForemanRelease::KubernetesClient.new(runner: runner)
+event_recorder = ForemanRelease::EventRecorder.new(
+  kubernetes_client: kubernetes,
+  reporting_instance: pod_uid
+)
+status_publisher = ForemanRelease::StatusPublisher.new(
+  kubernetes_client: kubernetes,
+  event_recorder: event_recorder
+)
+lease_manager = ForemanRelease::LeaseManager.new(runner: runner, duration_seconds: lease_duration)
+leader_lease_manager = ForemanRelease::LeaseManager.new(
+  runner: runner,
+  duration_seconds: leader_lease_duration,
+  lease_name: leader_lease_name
+)
+leader_elector = ForemanRelease::LeaderElector.new(
+  namespace: namespace,
+  identity: pod_uid,
+  lease_manager: leader_lease_manager
+)
+certificate_validator = ForemanRelease::CertificateValidator.new(
+  minimum_validity_seconds: certificate_minimum_validity
+)
+preflight = ForemanRelease::ClusterPreflight.new(
+  kubernetes,
+  runner: runner,
+  certificate_validator: certificate_validator
+)
+adapter = ForemanRelease::RuntimeAdapter.new(
+  root: root,
+  lease_identity: pod_uid,
+  runner: runner,
+  kubernetes_client: kubernetes,
+  lease_manager: lease_manager,
+  preflight: preflight
+)
+machine = ForemanRelease::StateMachine.load(root.join('operator/release-state-machine.json'))
+reconciler = ForemanRelease::Reconciler.new(
+  state_machine: machine,
+  adapter: adapter,
+  status_writer: status_publisher
+)
+controller_status = ForemanRelease::ControllerStatus.new
+controller = ForemanRelease::Controller.new(
+  namespace: namespace,
+  kubernetes_client: kubernetes,
+  reconciler: reconciler,
+  leader_elector: leader_elector,
+  poll_seconds: poll_seconds,
+  status: controller_status
+)
+health_server = ForemanRelease::HealthServer.new(
+  status: controller_status,
+  port: health_port,
+  readiness_max_staleness_seconds: readiness_max_staleness
+).start
+
+Signal.trap('TERM') { controller.stop }
+Signal.trap('INT') { controller.stop }
+begin
+  controller.run
+ensure
+  health_server.stop
+end

@@ -1,0 +1,33 @@
+apiVersion: platform.theforeman.org/v1beta1
+kind: ForemanRelease
+metadata:
+  name: foreman
+spec:
+  compatibilitySet: nightly-candidate-2026-09-24
+  allowCandidate: true
+  timeouts:
+    preflightSeconds: 300
+    leaseSeconds: 900
+    migrationSeconds: 3600
+    applicationRolloutSeconds: 1800
+    verificationSeconds: 600
+    proxyRolloutSeconds: 900
+  paused: false
+  retryToken: initial
+  reconcileToken: initial
+  driftCheckSeconds: 60
+  operationHistoryLimit: 3
+  failurePolicy:
+    afterMigration: Halt
+  application:
+    releaseName: foreman
+    adoptExisting: false
+    valuesSecretRef:
+      name: foreman-release-values
+      key: application.yaml
+  executionProxy:
+    releaseName: execution
+    adoptExisting: false
+    valuesSecretRef:
+      name: foreman-release-values
+      key: execution-proxy.yaml
