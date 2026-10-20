@@ -1,0 +1,18 @@
+foreman:
+  pluginPolicy:
+    allowUnverified: true
+  enabledPlugins:
+    - foreman-tasks
+    - katello
+    - foreman_kubevirt
+
+networkPolicy:
+  egress:
+    external:
+      computeProviders:
+        peers:
+          - ipBlock:
+              cidr: 192.0.2.50/32
+        ports:
+          - 443
+          - 6443
