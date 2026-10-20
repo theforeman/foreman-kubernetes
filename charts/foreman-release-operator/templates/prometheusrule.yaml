@@ -1,0 +1,85 @@
+{{- if .Values.monitoring.prometheusRule.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "foreman-release-operator.fullname" . }}
+  {{- $labels := mergeOverwrite (include "foreman-release-operator.labels" . | fromYaml) .Values.monitoring.prometheusRule.labels }}
+  labels:
+    {{- toYaml $labels | nindent 4 }}
+spec:
+  groups:
+    - name: foreman-release-operator
+      rules:
+        - alert: ForemanReleaseControllerMetricsMissing
+          expr: absent(foreman_release_controller_running)
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Foreman release controller metrics are missing
+            description: No Foreman release controller candidate is being scraped.
+        - alert: ForemanReleaseControllerNotReady
+          expr: max(foreman_release_controller_ready) < 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: No Foreman release controller candidate is ready
+            description: Neither controller candidate has completed a recent Kubernetes API cycle.
+        - alert: ForemanReleaseControllerLeaderUnavailable
+          expr: sum(foreman_release_controller_leader) != 1
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Foreman release controller leadership is unhealthy
+            description: The controller has either no elected leader or more than one candidate reporting leadership.
+        - alert: ForemanReleaseControllerCycleFailures
+          expr: sum(increase(foreman_release_controller_cycles_total{result="failure"}[10m])) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Foreman release controller cycles are failing
+            description: At least one controller cycle failed during the last ten minutes.
+        - alert: ForemanReleaseBlocked
+          expr: max by (namespace, name) (foreman_release_status{phase="Blocked"}) > 0
+          for: 1m
+          labels:
+            severity: critical
+          annotations:
+            summary: Foreman release is blocked
+            description: ForemanRelease {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }} requires correction and an explicit retry token change.
+        - alert: ForemanReleaseGenerationStalled
+          expr: max by (namespace, name) (foreman_release_metadata_generation) - max by (namespace, name) (foreman_release_observed_generation) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Foreman release generation is not observed
+            description: ForemanRelease {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }} has not acknowledged its current generation for ten minutes.
+        - alert: ForemanReleaseDriftAuditFailed
+          expr: min by (namespace, name) (foreman_release_drift_check_healthy) < 1
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: Foreman release drift audit is failing
+            description: ForemanRelease {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }} cannot verify declared resources or external Secret and certificate inputs.
+        - alert: ForemanReleaseCertificateExpiring
+          expr: (min by (namespace, name) (foreman_release_certificate_expiry_timestamp_seconds) - time() < 604800) and (min by (namespace, name) (foreman_release_certificate_expiry_timestamp_seconds) - time() > 86400)
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: Foreman release certificate expires within seven days
+            description: At least one certificate used by ForemanRelease {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }} must be rotated soon.
+        - alert: ForemanReleaseCertificateExpiryCritical
+          expr: min by (namespace, name) (foreman_release_certificate_expiry_timestamp_seconds) - time() <= 86400
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Foreman release certificate expires within 24 hours
+            description: At least one certificate used by ForemanRelease {{ "{{" }} $labels.namespace {{ "}}" }}/{{ "{{" }} $labels.name {{ "}}" }} is expired or inside the default release safety window.
+{{- end }}
