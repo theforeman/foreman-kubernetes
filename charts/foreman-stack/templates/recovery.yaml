@@ -1,0 +1,391 @@
+{{- if or .Values.backup.enabled .Values.restore.enabled }}
+{{- if eq .Values.platform.compatibilitySet "unqualified" }}
+{{- fail "recovery requires a qualified platform.compatibilitySet from a digest-pinned release profile" }}
+{{- end }}
+{{- if and (not .Values.recovery.image.allowMutableTagForTesting) (not (regexMatch "@sha256:[0-9a-f]{64}$" .Values.recovery.image.tag)) }}
+{{- fail "recovery.image.tag must end with an immutable @sha256 digest" }}
+{{- end }}
+{{- if and .Values.recovery.executionProxy.enabled (eq .Values.recovery.executionProxy.stateClaim .Values.recovery.executionProxy.ansibleClaim) }}
+{{- fail "recovery.executionProxy stateClaim and ansibleClaim must be distinct" }}
+{{- end }}
+{{- $root := . -}}
+{{- $operation := ternary "backup" "restore" .Values.backup.enabled -}}
+{{- $requestId := ternary .Values.backup.requestId .Values.restore.requestId .Values.backup.enabled -}}
+{{- $jobPrefix := printf "%s-%s" (include "foreman-stack.fullname" .) $operation | trunc 46 | trimSuffix "-" -}}
+{{- $jobName := printf "%s-%s" $jobPrefix $requestId -}}
+{{- $secretNames := list
+  .Values.foreman.existingEnvSecret
+  .Values.foreman.existingCertificateSecret
+  .Values.valkey.existingSecret
+  .Values.sharedSecret.name
+  .Values.candlepin.existingRuntimeSecret
+  .Values.candlepin.existingCertificateSecret
+  .Values.pulp.existingRuntimeSecret
+  .Values.pulp.existingConfigSecret
+  .Values.pulp.controlProxy.existingCertificateSecret
+-}}
+{{- if .Values.valkey.tls.enabled }}
+{{- $secretNames = append $secretNames .Values.valkey.tls.existingCaSecret }}
+{{- end }}
+{{- if .Values.outboundProxy.enabled }}
+{{- $secretNames = append $secretNames .Values.outboundProxy.existingSecret }}
+{{- end }}
+{{- if and .Values.foreman.email.enabled (ne .Values.foreman.email.smtp.authentication "none") }}
+{{- $secretNames = append $secretNames .Values.foreman.email.smtp.existingSecret }}
+{{- end }}
+{{- if .Values.foreman.existingDatabaseCaSecret }}
+{{- $secretNames = append $secretNames .Values.foreman.existingDatabaseCaSecret }}
+{{- end }}
+{{- if .Values.candlepin.existingDatabaseCaSecret }}
+{{- $secretNames = append $secretNames .Values.candlepin.existingDatabaseCaSecret }}
+{{- end }}
+{{- if .Values.pulp.existingDatabaseCaSecret }}
+{{- $secretNames = append $secretNames .Values.pulp.existingDatabaseCaSecret }}
+{{- end }}
+{{- if and (eq .Values.pulp.storage.backend "s3") .Values.pulp.storage.s3.existingSecret }}
+{{- $secretNames = append $secretNames .Values.pulp.storage.s3.existingSecret }}
+{{- end }}
+{{- if and (eq .Values.pulp.storage.backend "s3") .Values.pulp.storage.s3.existingCaSecret }}
+{{- $secretNames = append $secretNames .Values.pulp.storage.s3.existingCaSecret }}
+{{- end }}
+{{- if .Values.ingress.enabled }}
+{{- $ingressSecretNames := list .Values.ingress.foreman.tlsSecret .Values.ingress.foreman.clientCaSecret .Values.ingress.pulpContent.tlsSecret .Values.ingress.pulpContent.clientCaSecret -}}
+{{- $secretNames = concat $secretNames $ingressSecretNames }}
+{{- end }}
+{{- range .Values.imagePullSecrets }}
+{{- $secretNames = append $secretNames .name }}
+{{- end }}
+{{- range .Values.recovery.extraSecretNames }}
+{{- $secretNames = append $secretNames . }}
+{{- end }}
+{{- if .Values.recovery.executionProxy.enabled }}
+{{- range .Values.recovery.executionProxy.secretNames }}
+{{- $secretNames = append $secretNames . }}
+{{- end }}
+{{- end }}
+{{- $secretNames = uniq $secretNames | sortAlpha }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-recovery-scripts
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "recovery") | nindent 4 }}
+data:
+  recovery-common.sh: |
+{{ .Files.Get "files/recovery-common.sh" | indent 4 }}
+  backup.sh: |
+{{ .Files.Get "files/backup.sh" | indent 4 }}
+  restore.sh: |
+{{ .Files.Get "files/restore.sh" | indent 4 }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-recovery
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "recovery") | nindent 4 }}
+{{- with .Values.imagePullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-recovery
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "recovery") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames:
+      {{- toYaml $secretNames | nindent 6 }}
+    verbs:
+      {{- if .Values.restore.enabled }}
+      - get
+      - patch
+      - update
+      {{- else }}
+      - get
+      {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-recovery
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "recovery") | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "foreman-stack.fullname" . }}-recovery
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "foreman-stack.fullname" . }}-recovery
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $jobName }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" (printf "recovery-%s" $operation)) | nindent 4 }}
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.recovery.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.podLabels" (dict "root" . "component" (printf "recovery-%s" $operation)) | nindent 8 }}
+    spec:
+      {{- include "foreman-stack.recoveryScheduling" . | nindent 6 }}
+      restartPolicy: Never
+      serviceAccountName: {{ include "foreman-stack.fullname" . }}-recovery
+      automountServiceAccountToken: true
+      securityContext:
+        fsGroup: 700
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 700
+        runAsNonRoot: true
+        runAsUser: 700
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ $operation }}
+          image: {{ include "foreman-stack.image" .Values.recovery.image }}
+          imagePullPolicy: {{ .Values.recovery.image.pullPolicy }}
+          command:
+            - /opt/foreman-recovery/{{ $operation }}.sh
+          envFrom:
+            - secretRef:
+                name: {{ .Values.recovery.repository.existingSecret }}
+          env:
+            {{- include "foreman-stack.outboundProxyEnv" . | nindent 12 }}
+            - name: RESTIC_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.recovery.repository.existingSecret }}
+                  key: RESTIC_PASSWORD
+            {{- if not .Values.recovery.repository.existingClaim }}
+            - name: RESTIC_REPOSITORY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.recovery.repository.existingSecret }}
+                  key: RESTIC_REPOSITORY
+            {{- end }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: HELM_RELEASE
+              value: {{ .Release.Name | quote }}
+            - name: CHART_VERSION
+              value: {{ .Chart.Version | quote }}
+            - name: COMPATIBILITY_SET
+              value: {{ .Values.platform.compatibilitySet | quote }}
+            - name: QUIESCENCE_TIMEOUT_SECONDS
+              value: {{ .Values.recovery.quiescenceTimeoutSeconds | quote }}
+            - name: BACKUP_SECRET_NAMES
+              value: {{ join " " $secretNames | quote }}
+            - name: FOREMAN_DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.foreman.existingEnvSecret }}
+                  key: {{ .Values.foreman.databaseUrlSecretKey }}
+            - name: PGSSLMODE
+              value: {{ .Values.foreman.database.sslMode | quote }}
+            {{- if .Values.foreman.existingDatabaseCaSecret }}
+            - name: PGSSLROOTCERT
+              value: /etc/recovery/database-ca/foreman/db-ca.crt
+            {{- end }}
+            - name: CANDLEPIN_DATABASE_HOST
+              value: {{ .Values.candlepin.database.host | quote }}
+            - name: CANDLEPIN_DATABASE_PORT
+              value: {{ .Values.candlepin.database.port | quote }}
+            - name: CANDLEPIN_DATABASE_NAME
+              value: {{ .Values.candlepin.database.name | quote }}
+            - name: CANDLEPIN_DATABASE_USER
+              value: {{ .Values.candlepin.database.user | quote }}
+            - name: CANDLEPIN_DATABASE_SSLMODE
+              value: {{ .Values.candlepin.database.sslMode | quote }}
+            - name: CANDLEPIN_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.candlepin.existingRuntimeSecret }}
+                  key: {{ .Values.candlepin.databasePasswordSecretKey }}
+            {{- if .Values.candlepin.existingDatabaseCaSecret }}
+            - name: CANDLEPIN_DATABASE_SSLROOTCERT
+              value: /etc/recovery/database-ca/candlepin/db-ca.crt
+            {{- end }}
+            - name: PULP_DATABASE_HOST
+              value: {{ .Values.pulp.database.host | quote }}
+            - name: PULP_DATABASE_PORT
+              value: {{ .Values.pulp.database.port | quote }}
+            - name: PULP_DATABASE_NAME
+              value: {{ .Values.pulp.database.name | quote }}
+            - name: PULP_DATABASE_USER
+              value: {{ .Values.pulp.database.user | quote }}
+            - name: PULP_DATABASE_SSLMODE
+              value: {{ .Values.pulp.database.sslMode | quote }}
+            - name: PULP_DATABASE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.pulp.existingRuntimeSecret }}
+                  key: {{ .Values.pulp.databasePasswordSecretKey }}
+            {{- if .Values.pulp.existingDatabaseCaSecret }}
+            - name: PULP_DATABASE_SSLROOTCERT
+              value: /etc/recovery/database-ca/pulp/db-ca.crt
+            {{- end }}
+            - name: PULP_STORAGE_BACKEND
+              value: {{ .Values.pulp.storage.backend | quote }}
+            - name: PULP_OBJECT_STORAGE_RECOVERY_POINT
+              value: {{ ternary .Values.backup.objectStorageRecoveryPoint .Values.restore.objectStorageRecoveryPoint .Values.backup.enabled | quote }}
+            - name: EXECUTION_PROXY_RECOVERY_ENABLED
+              value: {{ .Values.recovery.executionProxy.enabled | quote }}
+            {{- if .Values.recovery.executionProxy.enabled }}
+            - name: EXECUTION_PROXY_RELEASE
+              value: {{ .Values.recovery.executionProxy.release | quote }}
+            {{- end }}
+            - name: RESTIC_CACHE_DIR
+              value: /tmp/restic-cache
+            {{- if .Values.recovery.repository.existingClaim }}
+            - name: RESTIC_REPOSITORY
+              value: {{ .Values.recovery.repository.path | quote }}
+            {{- end }}
+            {{- if .Values.backup.enabled }}
+            - name: BACKUP_REQUEST_ID
+              value: {{ .Values.backup.requestId | quote }}
+            - name: INITIALIZE_REPOSITORY
+              value: {{ .Values.backup.initializeRepository | quote }}
+            - name: RETENTION_ENABLED
+              value: {{ .Values.backup.retention.enabled | quote }}
+            - name: RETENTION_KEEP_DAILY
+              value: {{ .Values.backup.retention.keepDaily | quote }}
+            - name: RETENTION_KEEP_WEEKLY
+              value: {{ .Values.backup.retention.keepWeekly | quote }}
+            - name: RETENTION_KEEP_MONTHLY
+              value: {{ .Values.backup.retention.keepMonthly | quote }}
+            - name: RETENTION_PRUNE
+              value: {{ .Values.backup.retention.prune | quote }}
+            {{- else }}
+            - name: RESTORE_SNAPSHOT
+              value: {{ .Values.restore.snapshot | quote }}
+            - name: RESTORE_SECRETS
+              value: {{ .Values.restore.secrets | quote }}
+            - name: RESTORE_CONFIRMATION
+              value: {{ .Values.restore.confirmation | quote }}
+            {{- end }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+            readOnlyRootFilesystem: true
+            runAsGroup: 700
+            runAsNonRoot: true
+            runAsUser: 700
+          resources:
+            {{- toYaml .Values.recovery.resources | nindent 12 }}
+          volumeMounts:
+            - name: recovery-scripts
+              mountPath: /opt/foreman-recovery
+              readOnly: true
+            - name: recovery-work
+              mountPath: /work
+            - name: recovery-tmp
+              mountPath: /tmp
+            - name: foreman-avatars
+              mountPath: /var/lib/foreman/avatars
+            {{- if eq .Values.pulp.storage.backend "filesystem" }}
+            - name: pulp-data
+              mountPath: /var/lib/pulp
+            {{- end }}
+            {{- if .Values.recovery.executionProxy.enabled }}
+            - name: execution-proxy-state
+              mountPath: /var/lib/foreman-execution-proxy/state
+            - name: execution-proxy-ansible
+              mountPath: /var/lib/foreman-execution-proxy/ansible
+            {{- end }}
+            {{- if .Values.recovery.repository.existingClaim }}
+            - name: recovery-repository
+              mountPath: {{ .Values.recovery.repository.path }}
+            {{- end }}
+            {{- if .Values.foreman.existingDatabaseCaSecret }}
+            - name: foreman-database-ca
+              mountPath: /etc/recovery/database-ca/foreman
+              readOnly: true
+            {{- end }}
+            {{- if .Values.candlepin.existingDatabaseCaSecret }}
+            - name: candlepin-database-ca
+              mountPath: /etc/recovery/database-ca/candlepin
+              readOnly: true
+            {{- end }}
+            {{- if .Values.pulp.existingDatabaseCaSecret }}
+            - name: pulp-database-ca
+              mountPath: /etc/recovery/database-ca/pulp
+              readOnly: true
+            {{- end }}
+      volumes:
+        - name: recovery-scripts
+          configMap:
+            name: {{ include "foreman-stack.fullname" . }}-recovery-scripts
+            defaultMode: 0555
+        - name: recovery-work
+          {{- if .Values.recovery.work.existingClaim }}
+          persistentVolumeClaim:
+            claimName: {{ .Values.recovery.work.existingClaim }}
+          {{- else }}
+          emptyDir:
+            sizeLimit: {{ .Values.recovery.work.sizeLimit }}
+          {{- end }}
+        - name: recovery-tmp
+          emptyDir: {}
+        - name: foreman-avatars
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-foreman-avatars" (include "foreman-stack.fullname" .)) .Values.foreman.avatarStorage.existingClaim }}
+        {{- if eq .Values.pulp.storage.backend "filesystem" }}
+        - name: pulp-data
+          persistentVolumeClaim:
+            claimName: {{ default (printf "%s-pulp" (include "foreman-stack.fullname" .)) .Values.pulp.storage.existingClaim }}
+        {{- end }}
+        {{- if .Values.recovery.executionProxy.enabled }}
+        - name: execution-proxy-state
+          persistentVolumeClaim:
+            claimName: {{ .Values.recovery.executionProxy.stateClaim }}
+        - name: execution-proxy-ansible
+          persistentVolumeClaim:
+            claimName: {{ .Values.recovery.executionProxy.ansibleClaim }}
+        {{- end }}
+        {{- if .Values.recovery.repository.existingClaim }}
+        - name: recovery-repository
+          persistentVolumeClaim:
+            claimName: {{ .Values.recovery.repository.existingClaim }}
+        {{- end }}
+        {{- if .Values.foreman.existingDatabaseCaSecret }}
+        - name: foreman-database-ca
+          secret:
+            secretName: {{ .Values.foreman.existingDatabaseCaSecret }}
+            items:
+              - key: db-ca.crt
+                path: db-ca.crt
+        {{- end }}
+        {{- if .Values.candlepin.existingDatabaseCaSecret }}
+        - name: candlepin-database-ca
+          secret:
+            secretName: {{ .Values.candlepin.existingDatabaseCaSecret }}
+            items:
+              - key: db-ca.crt
+                path: db-ca.crt
+        {{- end }}
+        {{- if .Values.pulp.existingDatabaseCaSecret }}
+        - name: pulp-database-ca
+          secret:
+            secretName: {{ .Values.pulp.existingDatabaseCaSecret }}
+            items:
+              - key: db-ca.crt
+                path: db-ca.crt
+        {{- end }}
+{{- end }}
