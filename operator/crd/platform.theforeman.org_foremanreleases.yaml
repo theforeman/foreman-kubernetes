@@ -1,0 +1,373 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: foremanreleases.platform.theforeman.org
+spec:
+  group: platform.theforeman.org
+  conversion:
+    strategy: None
+  scope: Namespaced
+  names:
+    kind: ForemanRelease
+    listKind: ForemanReleaseList
+    plural: foremanreleases
+    singular: foremanrelease
+    shortNames:
+      - frelease
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: false
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Current set
+          type: string
+          jsonPath: .status.currentSet
+        - name: Target set
+          type: string
+          jsonPath: .status.targetSet
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema: &foremanReleaseSchema
+        openAPIV3Schema:
+          type: object
+          required:
+            - spec
+          properties:
+            spec:
+              type: object
+              required:
+                - compatibilitySet
+                - application
+                - executionProxy
+              properties:
+                compatibilitySet:
+                  type: string
+                  minLength: 1
+                  maxLength: 128
+                  pattern: ^[a-z0-9][a-z0-9._-]*$
+                allowCandidate:
+                  type: boolean
+                  default: false
+                  description: Permit an explicitly selected candidate set. Retired sets remain forbidden.
+                paused:
+                  type: boolean
+                  default: false
+                  description: Prevent the controller from starting another phase; an active migration or rollout is observed to completion.
+                retryToken:
+                  type: string
+                  maxLength: 128
+                  description: Change this value to explicitly retry a Blocked release after correcting its cause.
+                reconcileToken:
+                  type: string
+                  maxLength: 128
+                  description: Change this value to run a new validated release with the current compatibility set and values Secrets.
+                driftCheckSeconds:
+                  type: integer
+                  minimum: 30
+                  maximum: 3600
+                  default: 60
+                  description: Interval between read-only checks for missing Helm-managed resources while the release is Ready.
+                operationHistoryLimit:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                  default: 3
+                  description: Number of completed controller-owned release operation Job histories to retain. The current and every unfinished operation are always preserved.
+                failurePolicy:
+                  type: object
+                  default:
+                    afterMigration: Halt
+                  properties:
+                    afterMigration:
+                      type: string
+                      enum:
+                        - Halt
+                      default: Halt
+                      description: Database migrations are never rolled back by the release controller.
+                timeouts:
+                  type: object
+                  description: Maximum wall-clock time for each active release phase. Pausing at a safe boundary restarts that phase budget on resume.
+                  default:
+                    preflightSeconds: 300
+                    leaseSeconds: 900
+                    migrationSeconds: 3600
+                    applicationRolloutSeconds: 1800
+                    verificationSeconds: 600
+                    proxyRolloutSeconds: 900
+                  properties:
+                    preflightSeconds:
+                      type: integer
+                      minimum: 30
+                      maximum: 3600
+                      default: 300
+                    leaseSeconds:
+                      type: integer
+                      minimum: 30
+                      maximum: 86400
+                      default: 900
+                    migrationSeconds:
+                      type: integer
+                      minimum: 300
+                      maximum: 86400
+                      default: 3600
+                    applicationRolloutSeconds:
+                      type: integer
+                      minimum: 300
+                      maximum: 86400
+                      default: 1800
+                    verificationSeconds:
+                      type: integer
+                      minimum: 60
+                      maximum: 7200
+                      default: 600
+                    proxyRolloutSeconds:
+                      type: integer
+                      minimum: 120
+                      maximum: 86400
+                      default: 900
+                application:
+                  type: object
+                  required:
+                    - valuesSecretRef
+                  properties:
+                    adoptExisting:
+                      type: boolean
+                      default: false
+                      description: Explicitly allow the first operation to take ownership of an existing application Helm release.
+                    releaseName:
+                      type: string
+                      default: foreman
+                      minLength: 1
+                      maxLength: 53
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    valuesSecretRef:
+                      type: object
+                      required:
+                        - name
+                        - key
+                      properties:
+                        name:
+                          type: string
+                          minLength: 1
+                        key:
+                          type: string
+                          minLength: 1
+                executionProxy:
+                  type: object
+                  required:
+                    - valuesSecretRef
+                  properties:
+                    adoptExisting:
+                      type: boolean
+                      default: false
+                      description: Explicitly allow the first operation to take ownership of an existing execution-proxy Helm release.
+                    releaseName:
+                      type: string
+                      default: execution
+                      minLength: 1
+                      maxLength: 53
+                      pattern: ^[a-z0-9]([-a-z0-9]*[a-z0-9])?$
+                    valuesSecretRef:
+                      type: object
+                      required:
+                        - name
+                        - key
+                      properties:
+                        name:
+                          type: string
+                          minLength: 1
+                        key:
+                          type: string
+                          minLength: 1
+            status:
+              type: object
+              properties:
+                observedGeneration:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                phase:
+                  type: string
+                  enum:
+                    - Pending
+                    - Preflight
+                    - AcquiringLock
+                    - CheckingDependencies
+                    - Migrating
+                    - RollingApplication
+                    - VerifyingApplication
+                    - RollingProxy
+                    - Verifying
+                    - Ready
+                    - Blocked
+                phaseStartedAt:
+                  type: string
+                  format: date-time
+                currentSet:
+                  type: string
+                targetSet:
+                  type: string
+                lastSuccessfulSet:
+                  type: string
+                observedRetryToken:
+                  type: string
+                observedReconcileToken:
+                  type: string
+                operationSequence:
+                  type: integer
+                  format: int64
+                  minimum: 0
+                lastDriftCheckAt:
+                  type: string
+                  format: date-time
+                lastDriftCheckMessage:
+                  type: string
+                lastDriftCheckError:
+                  type: string
+                certificateExpiryTimestamp:
+                  type: string
+                  format: date-time
+                historyPrunedThroughOperation:
+                  type: string
+                historyPrunedLimit:
+                  type: integer
+                  minimum: 1
+                  maximum: 20
+                operation:
+                  type: object
+                  properties:
+                    id:
+                      type: string
+                    startedAt:
+                      type: string
+                      format: date-time
+                    type:
+                      type: string
+                      enum:
+                        - Release
+                        - Repair
+                    sequence:
+                      type: integer
+                      format: int64
+                      minimum: 1
+                    dependencyPreflightJobs:
+                      type: array
+                      items:
+                        type: string
+                    migrationJobs:
+                      type: array
+                      items:
+                        type: string
+                    sourceSets:
+                      type: array
+                      uniqueItems: true
+                      items:
+                        type: string
+                        minLength: 1
+                    applicationRevision:
+                      type: integer
+                      format: int64
+                      minimum: 1
+                    applicationSubmittedRevision:
+                      type: integer
+                      format: int64
+                      minimum: 1
+                    executionProxyRevision:
+                      type: integer
+                      format: int64
+                      minimum: 1
+                    executionProxySubmittedRevision:
+                      type: integer
+                      format: int64
+                      minimum: 1
+                    migrationsSkippedForRepair:
+                      type: boolean
+                    driftedResources:
+                      type: array
+                      items:
+                        type: string
+                    applicationValuesSha256:
+                      type: string
+                      pattern: ^[0-9a-f]{64}$
+                    executionProxyValuesSha256:
+                      type: string
+                      pattern: ^[0-9a-f]{64}$
+                    applicationProfileSha256:
+                      type: string
+                      pattern: ^[0-9a-f]{64}$
+                    executionProxyProfileSha256:
+                      type: string
+                      pattern: ^[0-9a-f]{64}$
+                    applicationSecretsSha256:
+                      type: string
+                      pattern: ^[0-9a-f]{64}$
+                    executionProxySecretsSha256:
+                      type: string
+                      pattern: ^[0-9a-f]{64}$
+                    timedOutPhase:
+                      type: string
+                    timeoutSeconds:
+                      type: integer
+                      format: int64
+                      minimum: 1
+                conditions:
+                  type: array
+                  x-kubernetes-list-type: map
+                  x-kubernetes-list-map-keys:
+                    - type
+                  items:
+                    type: object
+                    required:
+                      - type
+                      - status
+                      - reason
+                      - message
+                      - lastTransitionTime
+                      - observedGeneration
+                    properties:
+                      type:
+                        type: string
+                      status:
+                        type: string
+                        enum:
+                          - "True"
+                          - "False"
+                          - Unknown
+                      observedGeneration:
+                        type: integer
+                        format: int64
+                      reason:
+                        type: string
+                        minLength: 1
+                        maxLength: 1024
+                      message:
+                        type: string
+                        maxLength: 32768
+                      lastTransitionTime:
+                        type: string
+                        format: date-time
+    - name: v1beta1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Current set
+          type: string
+          jsonPath: .status.currentSet
+        - name: Target set
+          type: string
+          jsonPath: .status.targetSet
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema: *foremanReleaseSchema
