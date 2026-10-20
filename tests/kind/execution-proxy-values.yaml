@@ -1,0 +1,55 @@
+proxy:
+  foremanUrl: https://foreman.test
+  trustedHosts:
+    - foreman.test
+
+ssh:
+  user: foreman
+  hostKeyVerification:
+    enabled: false
+    insecureSkipVerificationAcknowledgement: I_UNDERSTAND_HOST_KEYS_ARE_NOT_VERIFIED
+
+ansible:
+  existingClaim: execution-ansible-content
+
+state:
+  size: 1Gi
+
+networkPolicy:
+  egress:
+    enabled: true
+    foreman:
+      peers:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+              app.kubernetes.io/instance: ingress-nginx
+      ports:
+        - 443
+        - 8443
+    targets:
+      peers:
+        - podSelector:
+            matchLabels:
+              app: execution-target
+      ports:
+        # NetworkPolicy is evaluated against the Pod target port after the
+        # Service translates its public SSH port 22.
+        - 2222
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    memory: 1Gi
+
+initResources:
+  requests:
+    cpu: 10m
+    memory: 16Mi
+  limits:
+    memory: 64Mi

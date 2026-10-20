@@ -1,0 +1,84 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: execution-ansible-content
+  namespace: foreman
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: execution-target
+  namespace: foreman
+spec:
+  selector:
+    app: execution-target
+  ports:
+    - name: ssh
+      port: 22
+      targetPort: ssh
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: execution-target
+  namespace: foreman
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: execution-target
+  template:
+    metadata:
+      labels:
+        app: execution-target
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsGroup: 1000
+        runAsNonRoot: true
+        runAsUser: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: sshd
+          image: foreman-kubernetes-ssh-target:test
+          imagePullPolicy: Never
+          ports:
+            - name: ssh
+              containerPort: 2222
+          readinessProbe:
+            tcpSocket:
+              port: ssh
+            periodSeconds: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            runAsGroup: 1000
+            runAsNonRoot: true
+            runAsUser: 1000
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              memory: 64Mi
+          volumeMounts:
+            - name: authorized-key
+              mountPath: /keys
+              readOnly: true
+      volumes:
+        - name: authorized-key
+          secret:
+            secretName: foreman-execution-proxy-ssh
+            items:
+              - key: id_rsa_foreman_proxy.pub
+                path: authorized_key
+            defaultMode: 0444
