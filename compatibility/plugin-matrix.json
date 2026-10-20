@@ -1,0 +1,157 @@
+{
+  "snapshot": {
+    "reviewedOn": "2026-09-25",
+    "foremanOciImagesCommit": "3aca77e57e1ccf5498312bea4fb9a66c7c1a40cb",
+    "pulpOciImagesCommit": "8a1bb6250901853f8666c997bf39343e7a54a5a6",
+    "foremanctlCommit": "cb135b25817fba875061a7d4495fe14ad2bd474e",
+    "foremanRemoteExecutionCommit": "be391fd9ef3140df707eed4f320ce2ebd572648d",
+    "foremanAnsibleCommit": "7ffc9e37344011554347ca9429fffdcf1f81816e",
+    "foremanWebhooksCommit": "4ad5882f4b866cb55b0d1bb102010ddb1e448ebd",
+    "foremanVirtWhoConfigureCommit": "78b9e78650013b6ef023a4163a7d47518024cd1d",
+    "foremanKubevirtUpstreamCommit": "4b89174424245289bd4cc7535a94a8c24aa19172",
+    "foremanKubevirtCompatibilityPatchCommit": "60d6c1f8ff3497d39c63e3359ea1e8539e2a0a70",
+    "foremanKubevirtValidationPatchCommit": "49d4822c9be3459e02406b36e4ffc6d69e9d9044",
+    "foremanKubevirtVolumePatchCommit": "abab1b52d2ccc5dff1db33f9034138442af48c65",
+    "foremanKubevirtDocumentationPatchCommit": "2eac240d9722e7881185a940523e8dc816524208",
+    "foremanKubevirtDeletionPatchCommit": "d684138299b9a0068a37116eb7a20e588a50f7ac",
+    "fogKubevirtUpstreamCommit": "d3277fa121609c5a2c949f3518f5f1bb07ef6447",
+    "fogKubevirtNamespacePatchCommit": "98c874ad35d74005297b6385ede267ac78e35662",
+    "fogKubevirtApiVersionPatchCommit": "baa222aaec7ada452989eed40c96c355eb6c5c81",
+    "smartProxyCommit": "c2af3d35497058fd7dc8146dcbca3adf60334b9e",
+    "smartProxyDynflowCommit": "a07e3fa37aca20f2038e8f469f88c545c39276ff",
+    "smartProxyRemoteExecutionSshCommit": "1ad66baae4498f7f3a5e3cc939ddf20e188336d2",
+    "smartProxyAnsibleCommit": "080753705e26a6a9aaa68a413a6935c9ac48c8ad"
+  },
+  "foreman": [
+    {
+      "name": "foreman-tasks",
+      "enabledByDefault": true,
+      "placement": "application",
+      "status": "chart-wired-integration-pending",
+      "requires": ["dynflow", "postgresql", "valkey"]
+    },
+    {
+      "name": "katello",
+      "enabledByDefault": true,
+      "placement": "application",
+      "status": "chart-wired-integration-pending",
+      "requires": ["foreman-tasks", "candlepin", "pulp"]
+    },
+    {
+      "name": "foreman_remote_execution",
+      "enabledByDefault": false,
+      "placement": "application-plus-external-proxy",
+      "status": "integration-drill-implemented-unrun",
+      "requires": ["foreman-tasks", "smart_proxy_dynflow", "smart_proxy_remote_execution_ssh"]
+    },
+    {
+      "name": "foreman_ansible",
+      "enabledByDefault": false,
+      "placement": "application-plus-external-proxy",
+      "status": "integration-drill-implemented-unrun",
+      "requires": ["foreman_remote_execution", "smart_proxy_ansible"]
+    },
+    {
+      "name": "foreman_google",
+      "enabledByDefault": false,
+      "placement": "application",
+      "status": "packaged-integration-pending",
+      "requires": ["cloud-credentials", "provider-egress"]
+    },
+    {
+      "name": "foreman_azure_rm",
+      "enabledByDefault": false,
+      "placement": "application",
+      "status": "packaged-integration-pending",
+      "requires": ["cloud-credentials", "provider-egress"]
+    },
+    {
+      "name": "foreman_kubevirt",
+      "enabledByDefault": false,
+      "placement": "application",
+      "status": "packaged-integration-pending",
+      "requires": ["kubevirt-api-credentials", "provider-egress"],
+      "blockers": [
+        {
+          "id": "dynamic-kubevirt-api-version",
+          "status": "local-fix-prepared",
+          "reason": "the packaged plugin forces the obsolete v1alpha3 API instead of using fog-kubevirt API discovery"
+        },
+        {
+          "id": "namespaced-network-attachment-discovery",
+          "status": "local-fix-prepared",
+          "reason": "fog-kubevirt lists NetworkAttachmentDefinitions cluster-wide instead of using the configured namespace"
+        },
+        {
+          "id": "connection-validation-errors",
+          "status": "local-fix-prepared",
+          "reason": "failed Kubernetes and KubeVirt probes return false without adding a model validation error"
+        },
+        {
+          "id": "partial-volume-cleanup",
+          "status": "local-fix-prepared",
+          "reason": "a later PVC creation failure leaks PVCs already created for the same VM"
+        },
+        {
+          "id": "grouped-vm-api-version",
+          "status": "local-fix-prepared",
+          "reason": "fog-kubevirt creates a custom resource with apiVersion v1 instead of kubevirt.io/v1"
+        },
+        {
+          "id": "safe-vm-deletion-order",
+          "status": "local-fix-prepared",
+          "reason": "the plugin deletes PVCs before Kubernetes accepts deletion of their VM"
+        }
+      ]
+    },
+    {
+      "name": "foreman_rh_cloud",
+      "enabledByDefault": false,
+      "placement": "application",
+      "status": "packaged-integration-pending",
+      "requires": ["katello", "cloud-credentials", "provider-egress"]
+    },
+    {
+      "name": "foreman_webhooks",
+      "enabledByDefault": false,
+      "placement": "application",
+      "status": "integration-drill-implemented-unrun",
+      "requires": ["destination-egress"]
+    },
+    {
+      "name": "foreman_virt_who_configure",
+      "enabledByDefault": false,
+      "placement": "application-plus-external-service",
+      "status": "integration-drill-implemented-unrun",
+      "requires": ["external-virt-who-host", "katello", "candlepin"]
+    }
+  ],
+  "pulp": [
+    { "name": "pulp_certguard", "enabledByDefault": true, "status": "chart-wired-integration-pending" },
+    { "name": "pulp_file", "enabledByDefault": true, "status": "chart-wired-integration-pending" },
+    { "name": "pulp_ansible", "enabledByDefault": false, "status": "chart-wired-integration-pending" },
+    { "name": "pulp_container", "enabledByDefault": true, "status": "integration-drill-implemented-unrun" },
+    { "name": "pulp_deb", "enabledByDefault": true, "status": "integration-drill-implemented-unrun" },
+    { "name": "pulp_ostree", "enabledByDefault": false, "status": "chart-wired-integration-pending" },
+    { "name": "pulp_python", "enabledByDefault": false, "status": "integration-drill-implemented-unrun" },
+    { "name": "pulp_rpm", "enabledByDefault": true, "status": "integration-drill-implemented-unrun" },
+    { "name": "pulp_smart_proxy", "enabledByDefault": true, "status": "chart-wired-integration-pending" }
+  ],
+  "smartProxyImagePlugins": [
+    {
+      "name": "remote_execution_ssh",
+      "placement": "central-execution-or-edge",
+      "status": "integration-drill-implemented-unrun"
+    },
+    {
+      "name": "ansible",
+      "placement": "central-execution-or-edge",
+      "status": "integration-drill-implemented-unrun"
+    },
+    {
+      "name": "container_gateway",
+      "placement": "edge-content",
+      "status": "packaged-not-deployed"
+    }
+  ]
+}
