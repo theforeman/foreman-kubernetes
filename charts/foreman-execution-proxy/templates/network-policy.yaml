@@ -1,0 +1,108 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- if and .Values.networkPolicy.egress.enabled (or (empty .Values.networkPolicy.egress.foreman.peers) (empty .Values.networkPolicy.egress.targets.peers)) }}
+{{- fail "restricted proxy egress requires both Foreman and managed-target peers" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-execution-proxy.fullname" . }}-default-deny-ingress
+  labels:
+    {{- include "foreman-execution-proxy.componentLabels" (dict "root" . "component" "default-deny-ingress") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+  policyTypes:
+    - Ingress
+{{- if not .Values.maintenance.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-execution-proxy.fullname" . }}
+  labels:
+    {{- include "foreman-execution-proxy.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "foreman-execution-proxy.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    {{- if .Values.networkPolicy.egress.enabled }}
+    - Egress
+    {{- end }}
+  ingress:
+    - from:
+        {{- toYaml .Values.networkPolicy.ingress.peers | nindent 8 }}
+        {{- if .Values.smokeTest.enabled }}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ .Release.Name }}
+              app.kubernetes.io/component: smoke-test
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.proxy.service.port }}
+  {{- if .Values.networkPolicy.egress.enabled }}
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.podSelector | nindent 12 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        {{- toYaml .Values.networkPolicy.egress.foreman.peers | nindent 8 }}
+      ports:
+        {{- range .Values.networkPolicy.egress.foreman.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+    - to:
+        {{- toYaml .Values.networkPolicy.egress.targets.peers | nindent 8 }}
+      ports:
+        {{- range .Values.networkPolicy.egress.targets.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+  {{- end }}
+{{- if .Values.smokeTest.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-execution-proxy.fullname" . }}-smoke-test-egress
+  labels:
+    {{- include "foreman-execution-proxy.componentLabels" (dict "root" . "component" "smoke-test-egress") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: smoke-test
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.namespaceSelector | nindent 12 }}
+          podSelector:
+            {{- toYaml .Values.networkPolicy.egress.dns.podSelector | nindent 12 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "foreman-execution-proxy.selectorLabels" . | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.proxy.service.port }}
+{{- end }}
+{{- end }}
+{{- end }}

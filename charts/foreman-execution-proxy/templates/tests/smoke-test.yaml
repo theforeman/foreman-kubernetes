@@ -1,0 +1,98 @@
+{{- if and .Values.smokeTest.enabled (not .Values.maintenance.enabled) }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman-execution-proxy.fullname" . }}-smoke-test
+  labels:
+    {{- include "foreman-execution-proxy.componentLabels" (dict "root" . "component" "smoke-test") | nindent 4 }}
+  annotations:
+    helm.sh/hook: test
+    helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.smokeTest.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-execution-proxy.componentPodLabels" (dict "root" . "component" "smoke-test") | nindent 8 }}
+    spec:
+      {{- include "foreman-execution-proxy.scheduling" . | nindent 6 }}
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        fsGroup: 991
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 991
+        runAsNonRoot: true
+        runAsUser: 991
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: smoke-test
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - ruby
+            - -rjson
+            - -rnet/http
+            - -ropenssl
+            - -ruri
+            - -e
+          args:
+            - |
+              uri = URI(ENV.fetch('PROXY_FEATURES_URL'))
+              client = Net::HTTP.new(uri.host, uri.port)
+              client.open_timeout = 10
+              client.read_timeout = 30
+              client.use_ssl = true
+              client.verify_mode = OpenSSL::SSL::VERIFY_PEER
+              client.ca_file = '/certificates/proxy-ca.crt'
+              client.cert = OpenSSL::X509::Certificate.new(File.read('/certificates/client_cert.pem'))
+              client.key = OpenSSL::PKey.read(File.read('/certificates/client_key.pem'))
+              response = client.start { |http| http.get(uri.request_uri) }
+              abort "Smart Proxy returned HTTP #{response.code}: #{response.body}" unless response.is_a?(Net::HTTPSuccess)
+
+              features = JSON.parse(response.body).map(&:downcase).sort
+              expected = %w[ansible dynflow script]
+              abort "unexpected Smart Proxy features: #{features.inspect}" unless features == expected
+              puts 'Smart Proxy mTLS and execution feature boundary are healthy'
+          env:
+            - name: HOME
+              value: /tmp
+            - name: PROXY_FEATURES_URL
+              value: {{ printf "https://%s:%v/features" (include "foreman-execution-proxy.fullname" .) .Values.proxy.service.port | quote }}
+          securityContext:
+            {{- include "foreman-execution-proxy.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.smokeTest.resources | nindent 12 }}
+          volumeMounts:
+            - name: certificates
+              mountPath: /certificates
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: certificates
+          projected:
+            sources:
+              - secret:
+                  name: {{ .Values.smokeTest.foremanCertificateSecret }}
+                  items:
+                    - key: client_cert.pem
+                      path: client_cert.pem
+                    - key: client_key.pem
+                      path: client_key.pem
+              - secret:
+                  name: {{ .Values.proxy.existingTlsSecret }}
+                  items:
+                    - key: {{ .Values.proxy.tlsSecretKeys.ca }}
+                      path: proxy-ca.crt
+            defaultMode: 0440
+        - name: tmp
+          emptyDir:
+            sizeLimit: 16Mi
+{{- end }}

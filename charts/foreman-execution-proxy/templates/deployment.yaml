@@ -1,0 +1,276 @@
+{{- if le (int .Values.terminationGracePeriodSeconds) (int .Values.proxy.requestDrainSeconds) }}
+{{- fail "terminationGracePeriodSeconds must exceed proxy.requestDrainSeconds" }}
+{{- end }}
+{{- if not .Values.maintenance.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "foreman-execution-proxy.fullname" . }}
+  labels:
+    {{- include "foreman-execution-proxy.labels" . | nindent 4 }}
+spec:
+  progressDeadlineSeconds: {{ .Values.progressDeadlineSeconds }}
+  replicas: {{ .Values.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "foreman-execution-proxy.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-execution-proxy.podLabels" . | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/config.yaml") . | sha256sum }}
+        checksum/secrets: {{ .Values.secretRolloutToken | sha256sum }}
+    spec:
+      {{- include "foreman-execution-proxy.scheduling" . | nindent 6 }}
+      serviceAccountName: {{ include "foreman-execution-proxy.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      # Resolve dotted external names before appending node search domains.
+      # Otherwise a wildcard in a node domain can shadow the Foreman URL.
+      dnsConfig:
+        options:
+          - name: ndots
+            value: "1"
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        fsGroup: 991
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 991
+        runAsNonRoot: true
+        runAsUser: 991
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: prepare-runtime
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              install -m 0600 /ssh-source/private /var/run/foreman-proxy/ssh/id_rsa_foreman_proxy
+              install -m 0644 /ssh-source/public /var/run/foreman-proxy/ssh/id_rsa_foreman_proxy.pub
+              {{- if .Values.ssh.userCertificate.enabled }}
+              install -m 0644 /ssh-source/certificate /var/run/foreman-proxy/ssh/id_rsa_foreman_proxy-cert.pub
+              install -m 0644 /ssh-source/ca-public /var/run/foreman-proxy/ssh/ssh-user-ca.pub
+              {{- end }}
+              install -d -m 0750 \
+                /var/lib/foreman-proxy/dynflow \
+                /var/lib/foreman-proxy/rex \
+                /var/lib/foreman-proxy/sockets \
+                /var/lib/foreman-proxy/ansible-runner
+              install -d -m 0700 /var/lib/foreman-proxy/ssh
+          securityContext:
+            {{- include "foreman-execution-proxy.containerSecurityContext" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.initResources | nindent 12 }}
+          volumeMounts:
+            - name: ssh-source
+              mountPath: /ssh-source
+              readOnly: true
+            - name: ssh-runtime
+              mountPath: /var/run/foreman-proxy/ssh
+            - name: state
+              mountPath: /var/lib/foreman-proxy
+            - name: tmp
+              mountPath: /tmp
+            - name: var-tmp
+              mountPath: /var/tmp
+      containers:
+        - name: foreman-proxy
+          image: {{ printf "%s:%s" .Values.image.repository .Values.image.tag }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command:
+            - /usr/share/foreman-proxy/bin/smart-proxy
+          securityContext:
+            {{- include "foreman-execution-proxy.containerSecurityContext" . | nindent 12 }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /usr/bin/sleep
+                  - {{ .Values.proxy.requestDrainSeconds | quote }}
+          env:
+            # The image also contains container_gateway. Keeping it out of this
+            # list prevents Bundler from loading that plugin at all.
+            - name: FOREMAN_PROXY_ENABLED_PLUGINS
+              value: remote_execution_ssh ansible
+            - name: FOREMAN_PROXY_HTTPS_PORT
+              value: {{ .Values.proxy.service.port | quote }}
+            - name: HOME
+              value: /usr/share/foreman-proxy
+            - name: TMPDIR
+              value: /tmp
+          ports:
+            - name: https
+              containerPort: {{ .Values.proxy.service.port }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/foreman-proxy/settings.yml
+              subPath: settings.yml
+              readOnly: true
+            - name: config
+              mountPath: /etc/foreman-proxy/settings.d/dynflow.yml
+              subPath: dynflow.yml
+              readOnly: true
+            - name: config
+              mountPath: /etc/foreman-proxy/settings.d/remote_execution_ssh.yml
+              subPath: remote_execution_ssh.yml
+              readOnly: true
+            - name: config
+              mountPath: /etc/foreman-proxy/settings.d/ansible.yml
+              subPath: ansible.yml
+              readOnly: true
+            - name: config
+              mountPath: /etc/foreman-proxy/ansible.env
+              subPath: ansible.env
+              readOnly: true
+            - name: config
+              mountPath: /etc/foreman-proxy/health/check-features.rb
+              subPath: check-features.rb
+              readOnly: true
+            - name: server-tls
+              mountPath: /etc/foreman-proxy/ssl_ca.pem
+              subPath: ca
+              readOnly: true
+            - name: server-tls
+              mountPath: /etc/foreman-proxy/ssl_cert.pem
+              subPath: certificate
+              readOnly: true
+            - name: server-tls
+              mountPath: /etc/foreman-proxy/ssl_key.pem
+              subPath: private-key
+              readOnly: true
+            - name: foreman-client-tls
+              mountPath: /etc/foreman-proxy/foreman_ssl_ca.pem
+              subPath: ca
+              readOnly: true
+            - name: foreman-client-tls
+              mountPath: /etc/foreman-proxy/foreman_ssl_cert.pem
+              subPath: certificate
+              readOnly: true
+            - name: foreman-client-tls
+              mountPath: /etc/foreman-proxy/foreman_ssl_key.pem
+              subPath: private-key
+              readOnly: true
+            - name: ssh-runtime
+              mountPath: /var/run/foreman-proxy/ssh
+              readOnly: true
+            {{- if .Values.ssh.hostKeyVerification.enabled }}
+            - name: ssh-host-keys
+              mountPath: /etc/foreman-proxy/ssh-host-keys
+              readOnly: true
+            {{- end }}
+            - name: state
+              mountPath: /var/lib/foreman-proxy
+            - name: ansible-content
+              mountPath: /etc/ansible
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            - name: var-tmp
+              mountPath: /var/tmp
+          startupProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - ruby
+                - /etc/foreman-proxy/health/check-features.rb
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            tcpSocket:
+              port: https
+            initialDelaySeconds: 60
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "foreman-execution-proxy.fullname" . }}-config
+        - name: server-tls
+          projected:
+            sources:
+              - secret:
+                  name: {{ .Values.proxy.existingTlsSecret }}
+                  items:
+                    - key: {{ .Values.proxy.tlsSecretKeys.ca }}
+                      path: ca
+                    - key: {{ .Values.proxy.tlsSecretKeys.certificate }}
+                      path: certificate
+                    - key: {{ .Values.proxy.tlsSecretKeys.privateKey }}
+                      path: private-key
+            defaultMode: 0440
+        - name: foreman-client-tls
+          projected:
+            sources:
+              - secret:
+                  name: {{ .Values.proxy.existingForemanClientSecret }}
+                  items:
+                    - key: {{ .Values.proxy.foremanClientSecretKeys.ca }}
+                      path: ca
+                    - key: {{ .Values.proxy.foremanClientSecretKeys.certificate }}
+                      path: certificate
+                    - key: {{ .Values.proxy.foremanClientSecretKeys.privateKey }}
+                      path: private-key
+            defaultMode: 0440
+        - name: ssh-source
+          projected:
+            sources:
+              - secret:
+                  name: {{ .Values.ssh.existingKeySecret }}
+                  items:
+                    - key: {{ .Values.ssh.privateKeyKey }}
+                      path: private
+                    - key: {{ .Values.ssh.publicKeyKey }}
+                      path: public
+                    {{- if .Values.ssh.userCertificate.enabled }}
+                    - key: {{ .Values.ssh.userCertificate.certificateKey }}
+                      path: certificate
+                    - key: {{ .Values.ssh.userCertificate.caPublicKeyKey }}
+                      path: ca-public
+                    {{- end }}
+            defaultMode: 0440
+        - name: ssh-runtime
+          emptyDir:
+            sizeLimit: 1Mi
+        {{- if .Values.ssh.hostKeyVerification.enabled }}
+        - name: ssh-host-keys
+          projected:
+            sources:
+              - secret:
+                  name: {{ .Values.ssh.hostKeyVerification.existingKnownHostsSecret }}
+                  items:
+                    - key: {{ .Values.ssh.hostKeyVerification.knownHostsKey }}
+                      path: known_hosts
+            defaultMode: 0444
+        {{- end }}
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "foreman-execution-proxy.stateClaimName" . }}
+        - name: ansible-content
+          persistentVolumeClaim:
+            claimName: {{ include "foreman-execution-proxy.ansibleClaimName" . }}
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: var-tmp
+          emptyDir:
+            sizeLimit: 2Gi
+{{- end }}
