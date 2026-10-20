@@ -1,0 +1,60 @@
+{{- if .Values.networkPolicy.ingress.enabled }}
+{{- if and .Values.monitoring.serviceMonitor.enabled (eq (len .Values.networkPolicy.ingress.peers) 0) }}
+{{- fail "monitoring.serviceMonitor requires networkPolicy.ingress.peers when operator ingress isolation is enabled" }}
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-release-operator.fullname" . }}-ingress
+  labels:
+    {{- include "foreman-release-operator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "foreman-release-operator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  {{- if gt (len .Values.networkPolicy.ingress.peers) 0 }}
+  ingress:
+    - from:
+        {{- toYaml .Values.networkPolicy.ingress.peers | nindent 8 }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.health.port }}
+  {{- end }}
+{{- end }}
+{{- if .Values.networkPolicy.egress.enabled }}
+{{- if eq (len .Values.networkPolicy.egress.apiServer.peers) 0 }}
+{{- fail "networkPolicy.egress.apiServer.peers must identify the Kubernetes API endpoint" }}
+{{- end }}
+{{- if .Values.networkPolicy.ingress.enabled }}
+---
+{{- end }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "foreman-release-operator.fullname" . }}-egress
+  labels:
+    {{- include "foreman-release-operator.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "foreman-release-operator.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - {{- toYaml .Values.networkPolicy.egress.dns | nindent 10 }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        {{- toYaml .Values.networkPolicy.egress.apiServer.peers | nindent 8 }}
+      ports:
+        {{- range .Values.networkPolicy.egress.apiServer.ports }}
+        - protocol: TCP
+          port: {{ . }}
+        {{- end }}
+{{- end }}
