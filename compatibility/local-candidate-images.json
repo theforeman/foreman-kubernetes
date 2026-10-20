@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "platform": "linux/amd64",
+  "images": {
+    "foreman": {
+      "baseReference": "quay.io/foreman/foreman:nightly@sha256:9c77128c7acd629c62686a9119816d6f6b7726cd6492d9eaa894d54c345c4941",
+      "localReference": "foreman-kubernetes/foreman:candidate",
+      "overlays": [
+        {
+          "contract": "foreman-configurable-puma-run-dir",
+          "target": "foreman",
+          "paths": [
+            "config/puma/production.rb",
+            "script/foreman-puma-status"
+          ]
+        },
+        {
+          "contract": "foreman-dynflow-readiness-file",
+          "target": "foreman",
+          "paths": [
+            "extras/dynflow-sidekiq.rb",
+            "lib/foreman/dynflow_readiness.rb"
+          ]
+        },
+        {
+          "contract": "foreman-escaped-client-certificate",
+          "target": "foreman",
+          "paths": [
+            "app/services/foreman/client_certificate.rb"
+          ]
+        },
+        {
+          "contract": "foreman-dynflow-redis-tls-ca",
+          "target": "foreman",
+          "paths": [
+            "config/initializers/sidekiq.rb",
+            "lib/foreman/dynflow_redis_configuration.rb"
+          ]
+        },
+        {
+          "contract": "katello-pulp-non-default-port",
+          "target": "katello",
+          "paths": [
+            "app/models/katello/concerns/smart_proxy_extensions.rb"
+          ]
+        },
+        {
+          "contract": "katello-container-registry-api-url",
+          "target": "katello",
+          "paths": [
+            "app/lib/katello/resources/registry.rb"
+          ]
+        }
+      ]
+    },
+    "execution-proxy": {
+      "baseReference": "quay.io/foreman/foreman-proxy:nightly@sha256:244c756844a137990779ad153998c426eb0326d8d6f376192ea6e84947affd47",
+      "localReference": "foreman-kubernetes/execution-proxy:candidate",
+      "overlays": [
+        {
+          "contract": "smart-proxy-rex-dynflow-recovery-actions",
+          "target": "smart_proxy_remote_execution_ssh",
+          "paths": [
+            "lib/smart_proxy_remote_execution_ssh.rb"
+          ]
+        }
+      ]
+    },
+    "candlepin": {
+      "baseReference": "quay.io/foreman/candlepin:foreman-nightly@sha256:b9fe6c5f161132b39982e1951e8b4a16bf00d2565ecb17e53b13b56196a1f280",
+      "localReference": "foreman-kubernetes/candlepin:candidate",
+      "overlays": [
+        {
+          "contract": "candlepin-container-runtime",
+          "target": "candlepin",
+          "paths": [
+            "images/candlepin/assets/candlepin-db-migrate"
+          ]
+        }
+      ]
+    },
+    "pulp": {
+      "baseReference": "quay.io/foreman/pulp:foreman-nightly@sha256:c3d32a385d09225c40f70d60128fcf62c94cb669536b10ccbadc0ec8ac4afa6b",
+      "localReference": "foreman-kubernetes/pulp:candidate",
+      "overlays": [
+        {
+          "contract": "pulp-smart-proxy-container-registry-api-url",
+          "target": "pulp_smart_proxy",
+          "paths": [
+            "pulp_smart_proxy/app/settings.py",
+            "pulp_smart_proxy/app/views.py"
+          ]
+        }
+      ],
+      "contracts": [
+        "pulpcore-package-django-storages",
+        "pulp-image-object-storage-runtime"
+      ],
+      "pythonRequirements": [
+        "boto3==1.43.93 --hash=sha256:3c948fe231490d446bf90bf3322d1452632107329d3683b37d88b7399bf481a0",
+        "botocore==1.43.93 --hash=sha256:3ca57bb5d26d88b554a74de708a5c991f45306436c91aacca931252d1d4d54ff",
+        "django-storages==1.14.6 --hash=sha256:11b7b6200e1cb5ffcd9962bd3673a39c7d6a6109e8096f0e03d46fab3d3aabd9",
+        "jmespath==1.1.0 --hash=sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64",
+        "s3transfer==0.19.2 --hash=sha256:d8168eccca828cbb2cd573675333f3bddd254313a9c42494b84c76b539e8ba25"
+      ],
+      "rpmRequirements": [
+        "python3-pip"
+      ]
+    }
+  }
+}

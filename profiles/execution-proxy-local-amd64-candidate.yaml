@@ -1,0 +1,12 @@
+# Local qualification only. This image contains the unpublished Remote
+# Execution recovery fix recorded by compatibility/local-candidate-images.json.
+compatibilitySet: nightly-candidate-2026-09-24
+
+scheduling:
+  nodeSelector:
+    kubernetes.io/arch: amd64
+
+image:
+  repository: foreman-kubernetes/execution-proxy
+  tag: candidate
+  pullPolicy: Never

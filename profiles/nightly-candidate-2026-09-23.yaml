@@ -1,0 +1,22 @@
+# Manifest-verified candidate set. It becomes supported only after tests/kind/run.sh passes.
+platform:
+  compatibilitySet: nightly-candidate-2026-09-24
+
+scheduling:
+  nodeSelector:
+    kubernetes.io/arch: amd64
+
+foreman:
+  image:
+    repository: quay.io/foreman/foreman
+    tag: nightly@sha256:9c77128c7acd629c62686a9119816d6f6b7726cd6492d9eaa894d54c345c4941
+
+candlepin:
+  image:
+    repository: quay.io/foreman/candlepin
+    tag: foreman-nightly@sha256:b9fe6c5f161132b39982e1951e8b4a16bf00d2565ecb17e53b13b56196a1f280
+
+pulp:
+  image:
+    repository: quay.io/foreman/pulp
+    tag: foreman-nightly@sha256:c3d32a385d09225c40f70d60128fcf62c94cb669536b10ccbadc0ec8ac4afa6b
