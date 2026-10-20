@@ -1,0 +1,237 @@
+{{- if and .Values.migrations.enabled (not .Values.maintenance.enabled) (not .Values.releaseOperation.skipMigrationJobs) .Values.releaseOperation.id }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "foreman-stack.releaseJobName" (dict "root" . "component" "dependency-preflight") }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "dependency-preflight") | nindent 4 }}
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.pulpPodLabels" (dict "root" . "component" "dependency-preflight") | nindent 8 }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      restartPolicy: OnFailure
+      serviceAccountName: {{ include "foreman-stack.pulpServiceAccountName" . }}
+      automountServiceAccountToken: false
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: foreman
+          image: {{ include "foreman-stack.image" .Values.foreman.image }}
+          imagePullPolicy: {{ .Values.foreman.image.pullPolicy }}
+          workingDir: /usr/share/foreman
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 994 "runAsGroup" 994) | nindent 12 }}
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              ruby <<'RUBY'
+              require 'pg'
+              require 'redis'
+
+              connection = PG.connect(ENV.fetch('DATABASE_URL'))
+              value = connection.exec('SELECT 1').getvalue(0, 0)
+              connection.close
+              raise 'Foreman database returned an unexpected result' unless value == '1'
+
+              urls = ENV.fetch('FOREMAN_RAILS_CACHE_STORE_URLS').split(',')
+              urls << ENV.fetch('DYNFLOW_REDIS_URL')
+              urls.each do |url|
+                options = {url: url, connect_timeout: 10, read_timeout: 10, write_timeout: 10}
+                if url.start_with?('rediss://')
+                  options[:ssl_params] = {ca_file: ENV.fetch('DYNFLOW_REDIS_SSL_CA_FILE')}
+                end
+                raise 'Foreman Valkey returned an unexpected response' unless Redis.new(**options).ping == 'PONG'
+              end
+              puts 'Foreman database and Valkey dependencies are reachable'
+              RUBY
+          env:
+            - name: VALKEY_FOREMAN_CACHE_URI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.valkey.existingSecret }}
+                  key: {{ .Values.valkey.foremanCacheUriAuthSecretKey }}
+            - name: VALKEY_DYNFLOW_URI_AUTH
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.valkey.existingSecret }}
+                  key: {{ .Values.valkey.dynflowUriAuthSecretKey }}
+            - name: FOREMAN_RAILS_CACHE_STORE_URLS
+              value: {{ printf "%s://$(VALKEY_FOREMAN_CACHE_URI_AUTH)%s:%v/%v" (include "foreman-stack.valkeyScheme" .) .Values.valkey.foremanCache.host .Values.valkey.foremanCache.port .Values.valkey.foremanCache.database | quote }}
+            - name: DYNFLOW_REDIS_URL
+              value: {{ printf "%s://$(VALKEY_DYNFLOW_URI_AUTH)%s:%v/%v" (include "foreman-stack.valkeyScheme" .) .Values.valkey.dynflow.host .Values.valkey.dynflow.port .Values.valkey.dynflow.database | quote }}
+            {{- if .Values.valkey.tls.enabled }}
+            - name: DYNFLOW_REDIS_SSL_CA_FILE
+              value: /etc/foreman/certs/valkey-ca.crt
+            {{- end }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.foreman.existingEnvSecret }}
+                  key: {{ .Values.foreman.databaseUrlSecretKey }}
+            - name: PGSSLMODE
+              value: {{ .Values.foreman.database.sslMode | quote }}
+            {{- if .Values.foreman.existingDatabaseCaSecret }}
+            - name: PGSSLROOTCERT
+              value: /etc/foreman/certs/db-ca.crt
+            {{- end }}
+          resources:
+            {{- toYaml .Values.foreman.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.foreman.existingDatabaseCaSecret }}
+            - name: foreman-database-ca
+              mountPath: /etc/foreman/certs/db-ca.crt
+              subPath: db-ca.crt
+              readOnly: true
+            {{- end }}
+            {{- if .Values.valkey.tls.enabled }}
+            - name: valkey-ca
+              mountPath: /etc/foreman/certs/valkey-ca.crt
+              subPath: {{ .Values.valkey.tls.caSecretKey }}
+              readOnly: true
+            {{- end }}
+        - name: pulp
+          image: {{ include "foreman-stack.image" .Values.pulp.image }}
+          imagePullPolicy: {{ .Values.pulp.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 700 "runAsGroup" 700) | nindent 12 }}
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              python3 - <<'PYTHON'
+              import os
+
+              import psycopg
+              import redis
+
+              database_options = {
+                  "dbname": os.environ["PULP_DATABASES__default__NAME"],
+                  "user": os.environ["PULP_DATABASES__default__USER"],
+                  "password": os.environ["PULP_DATABASES__default__PASSWORD"],
+                  "host": os.environ["PULP_DATABASES__default__HOST"],
+                  "port": os.environ["PULP_DATABASES__default__PORT"],
+                  "sslmode": os.environ["PULP_DATABASES__default__OPTIONS__sslmode"],
+                  "connect_timeout": 10,
+              }
+              root_certificate = os.environ.get("PULP_DATABASES__default__OPTIONS__sslrootcert")
+              if root_certificate:
+                  database_options["sslrootcert"] = root_certificate
+              with psycopg.connect(**database_options) as connection:
+                  with connection.cursor() as cursor:
+                      cursor.execute("SELECT 1")
+                      if cursor.fetchone() != (1,):
+                          raise RuntimeError("Pulp database returned an unexpected result")
+
+              tls_enabled = os.environ["PULP_REDIS_SSL"].lower() == "true"
+              cache_options = {
+                  "host": os.environ["PULP_REDIS_HOST"],
+                  "port": int(os.environ["PULP_REDIS_PORT"]),
+                  "db": int(os.environ["PULP_REDIS_DB"]),
+                  "password": os.environ["PULP_REDIS_PASSWORD"],
+                  "ssl": tls_enabled,
+                  "socket_connect_timeout": 10,
+                  "socket_timeout": 10,
+              }
+              if tls_enabled:
+                  cache_options["ssl_ca_certs"] = os.environ["PULP_REDIS_SSL_CA_CERTS"]
+              if redis.Redis(**cache_options).ping() is not True:
+                  raise RuntimeError("Pulp Valkey returned an unexpected response")
+
+              if os.environ["PULP_STORAGE_BACKEND"] == "s3":
+                  import boto3
+                  from botocore.config import Config
+
+                  def optional(name):
+                      return os.environ.get(name) or None
+
+                  client = boto3.client(
+                      "s3",
+                      endpoint_url=optional("PULP_STORAGES__default__OPTIONS__endpoint_url"),
+                      region_name=optional("PULP_STORAGES__default__OPTIONS__region_name"),
+                      aws_access_key_id=optional("PULP_STORAGES__default__OPTIONS__access_key"),
+                      aws_secret_access_key=optional("PULP_STORAGES__default__OPTIONS__secret_key"),
+                      aws_session_token=optional("PULP_STORAGES__default__OPTIONS__security_token"),
+                      verify=optional("AWS_CA_BUNDLE") or True,
+                      config=Config(
+                          signature_version=os.environ["PULP_STORAGES__default__OPTIONS__signature_version"],
+                          s3={"addressing_style": os.environ["PULP_STORAGES__default__OPTIONS__addressing_style"]},
+                      ),
+                  )
+                  client.list_objects_v2(
+                      Bucket=os.environ["PULP_STORAGES__default__OPTIONS__bucket_name"],
+                      Prefix=optional("PULP_STORAGES__default__OPTIONS__location") or "",
+                      MaxKeys=1,
+                  )
+              print("Pulp database, Valkey, and storage dependencies are reachable")
+              PYTHON
+          env:
+            {{- include "foreman-stack.pulpEnv" . | nindent 12 }}
+            {{- include "foreman-stack.pulpObjectStorageCredentialEnv" . | nindent 12 }}
+            - name: PULP_STORAGE_BACKEND
+              value: {{ .Values.pulp.storage.backend | quote }}
+          resources:
+            {{- toYaml .Values.pulp.resources | nindent 12 }}
+          volumeMounts:
+            {{- include "foreman-stack.pulpDatabaseCaVolumeMount" . | nindent 12 }}
+            {{- include "foreman-stack.pulpValkeyCaVolumeMount" . | nindent 12 }}
+            {{- include "foreman-stack.pulpObjectStorageCaVolumeMount" . | nindent 12 }}
+        - name: candlepin
+          image: {{ include "foreman-stack.image" .Values.candlepin.image }}
+          imagePullPolicy: {{ .Values.candlepin.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict) | nindent 12 }}
+          command:
+            - /usr/local/bin/candlepin-db-migrate
+          args:
+            - --url=jdbc:postgresql://{{ .Values.candlepin.database.host }}:{{ .Values.candlepin.database.port }}/{{ .Values.candlepin.database.name }}?sslmode={{ .Values.candlepin.database.sslMode }}{{ if .Values.candlepin.existingDatabaseCaSecret }}&sslrootcert=/etc/candlepin/certs/db-ca.crt{{ end }}
+            - --username={{ .Values.candlepin.database.user }}
+            - --headless=true
+            - --log-level=info
+            - status
+            - --verbose
+            - -Dcommunity=true
+          env:
+            - name: LIQUIBASE_COMMAND_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.candlepin.existingRuntimeSecret }}
+                  key: {{ .Values.candlepin.databasePasswordSecretKey }}
+          resources:
+            {{- toYaml .Values.candlepin.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.candlepin.existingDatabaseCaSecret }}
+            - name: candlepin-database-ca
+              mountPath: /etc/candlepin/certs/db-ca.crt
+              subPath: db-ca.crt
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if .Values.foreman.existingDatabaseCaSecret }}
+        - name: foreman-database-ca
+          secret:
+            secretName: {{ .Values.foreman.existingDatabaseCaSecret }}
+            items:
+              - key: db-ca.crt
+                path: db-ca.crt
+        {{- end }}
+        {{- include "foreman-stack.pulpDatabaseCaVolume" . | nindent 8 }}
+        {{- include "foreman-stack.pulpValkeyCaVolume" . | nindent 8 }}
+        {{- include "foreman-stack.pulpObjectStorageCaVolume" . | nindent 8 }}
+        {{- if .Values.candlepin.existingDatabaseCaSecret }}
+        - name: candlepin-database-ca
+          secret:
+            secretName: {{ .Values.candlepin.existingDatabaseCaSecret }}
+            items:
+              - key: db-ca.crt
+                path: db-ca.crt
+        {{- end }}
+{{- end }}

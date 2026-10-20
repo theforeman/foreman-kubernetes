@@ -1,0 +1,214 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-candlepin
+  annotations:
+    foreman-kubernetes.io/certificate-secret: {{ .Values.candlepin.existingCertificateSecret | quote }}
+    foreman-kubernetes.io/certificate-key: "tomcat.crt"
+    foreman-kubernetes.io/certificate-dns-name: {{ include "foreman-stack.candlepinServiceName" . | quote }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "candlepin") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: candlepin
+  ports:
+    - name: https
+      port: {{ .Values.candlepin.service.port }}
+      targetPort: https
+{{- if not .Values.maintenance.enabled }}
+{{- $minimumShutdown := add (int .Values.candlepin.shutdown.requestDrainSeconds) (mul 2 (int .Values.candlepin.shutdown.asyncJobsTimeoutSeconds)) }}
+{{- if lt (int .Values.candlepin.shutdown.terminationGracePeriodSeconds) $minimumShutdown }}
+{{- fail "candlepin.shutdown.terminationGracePeriodSeconds must cover requestDrainSeconds plus both asynchronous job pool shutdown windows" }}
+{{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-candlepin
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "candlepin") | nindent 4 }}
+spec:
+  progressDeadlineSeconds: {{ .Values.platform.deploymentProgressDeadlineSeconds }}
+  replicas: {{ .Values.candlepin.replicas }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: candlepin
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.podLabels" (dict "root" . "component" "candlepin") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/runtime-config.yaml") . | sha256sum }}
+        checksum/secrets: {{ .Values.secretRolloutToken | sha256sum }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      serviceAccountName: {{ include "foreman-stack.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.candlepin.shutdown.terminationGracePeriodSeconds }}
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        fsGroup: 53
+        fsGroupChangePolicy: OnRootMismatch
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if .Values.migrations.enabled }}
+      initContainers:
+        - name: ensure-candlepin-migrations
+          image: {{ include "foreman-stack.image" .Values.candlepin.image }}
+          imagePullPolicy: {{ .Values.candlepin.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict) | nindent 12 }}
+          command:
+            - /usr/local/bin/candlepin-db-migrate
+          args:
+            - --url=jdbc:postgresql://{{ .Values.candlepin.database.host }}:{{ .Values.candlepin.database.port }}/{{ .Values.candlepin.database.name }}?sslmode={{ .Values.candlepin.database.sslMode }}{{ if .Values.candlepin.existingDatabaseCaSecret }}&sslrootcert=/etc/candlepin/certs/db-ca.crt{{ end }}
+            - --username={{ .Values.candlepin.database.user }}
+            - --headless=true
+            - --log-level=info
+            - update
+            - -Dcommunity=true
+          env:
+            - name: LIQUIBASE_COMMAND_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.candlepin.existingRuntimeSecret }}
+                  key: {{ .Values.candlepin.databasePasswordSecretKey }}
+          resources:
+            {{- toYaml .Values.candlepin.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.candlepin.existingDatabaseCaSecret }}
+            - name: candlepin-database-ca
+              mountPath: /etc/candlepin/certs/db-ca.crt
+              subPath: db-ca.crt
+              readOnly: true
+            {{- end }}
+      {{- end }}
+      containers:
+        - name: candlepin
+          image: {{ include "foreman-stack.image" .Values.candlepin.image }}
+          imagePullPolicy: {{ .Values.candlepin.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict) | nindent 12 }}
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /usr/bin/sleep
+                  - {{ .Values.candlepin.shutdown.requestDrainSeconds | quote }}
+          env:
+            - name: CANDLEPIN_AUTH_OAUTH_CONSUMER_KATELLO_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.sharedSecret.name }}
+                  key: {{ .Values.sharedSecret.candlepinOAuthSecretKey }}
+            - name: JPA_CONFIG_HIBERNATE_CONNECTION_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.candlepin.existingRuntimeSecret }}
+                  key: {{ .Values.candlepin.databasePasswordSecretKey }}
+            - name: ORG_QUARTZ_DATASOURCE_MYDS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.candlepin.existingRuntimeSecret }}
+                  key: {{ .Values.candlepin.databasePasswordSecretKey }}
+          ports:
+            - name: https
+              containerPort: {{ .Values.candlepin.service.port }}
+          volumeMounts:
+            - name: candlepin-generated-config
+              mountPath: /etc/candlepin/candlepin.conf
+              subPath: candlepin.conf
+              readOnly: true
+            - name: candlepin-generated-config
+              mountPath: /etc/tomcat/server.xml
+              subPath: server.xml
+              readOnly: true
+            - name: candlepin-generated-config
+              mountPath: /etc/tomcat/tomcat.conf
+              subPath: tomcat.conf
+              readOnly: true
+            - name: candlepin-generated-config
+              mountPath: /etc/tomcat/logging.properties
+              subPath: logging.properties
+              readOnly: true
+            - name: candlepin-generated-config
+              mountPath: /var/lib/tomcat/webapps/candlepin/WEB-INF/classes/logback.xml
+              subPath: logback.xml
+              readOnly: true
+            - name: candlepin-certificates
+              mountPath: /etc/candlepin/certs/candlepin-ca.crt
+              subPath: candlepin-ca.crt
+              readOnly: true
+            - name: candlepin-certificates
+              mountPath: /etc/candlepin/certs/candlepin-ca.key
+              subPath: candlepin-ca.key
+              readOnly: true
+            - name: candlepin-certificates
+              mountPath: /etc/candlepin/certs/tomcat.crt
+              subPath: tomcat.crt
+              readOnly: true
+            - name: candlepin-certificates
+              mountPath: /etc/candlepin/certs/tomcat.key
+              subPath: tomcat.key
+              readOnly: true
+            {{- if .Values.candlepin.existingDatabaseCaSecret }}
+            - name: candlepin-database-ca
+              mountPath: /etc/candlepin/certs/db-ca.crt
+              subPath: db-ca.crt
+              readOnly: true
+            {{- end }}
+          startupProbe:
+            tcpSocket:
+              port: https
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  response="$(
+                    printf 'GET /candlepin/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' |
+                      openssl s_client -quiet -verify_return_error \
+                        -CAfile /etc/candlepin/certs/candlepin-ca.crt \
+                        -connect "127.0.0.1:{{ .Values.candlepin.service.port }}" 2>/dev/null
+                  )"
+                  printf '%s\n' "${response}" | head -n 1 | grep -Eq '^HTTP/1\.[01] 200 '
+                  printf '%s\n' "${response}" | grep -Eq '"mode"[[:space:]]*:[[:space:]]*"NORMAL"'
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 18
+          livenessProbe:
+            tcpSocket:
+              port: https
+            initialDelaySeconds: 120
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.candlepin.resources | nindent 12 }}
+      volumes:
+        - name: candlepin-generated-config
+          configMap:
+            name: {{ include "foreman-stack.candlepinConfigName" . }}
+        - name: candlepin-certificates
+          secret:
+            secretName: {{ .Values.candlepin.existingCertificateSecret }}
+        {{- if .Values.candlepin.existingDatabaseCaSecret }}
+        - name: candlepin-database-ca
+          secret:
+            secretName: {{ .Values.candlepin.existingDatabaseCaSecret }}
+            items:
+              - key: db-ca.crt
+                path: db-ca.crt
+        {{- end }}
+      {{- include "foreman-stack.topologySpread" (dict "Values" .Values "Release" .Release "component" "candlepin") | nindent 6 }}
+{{- end }}
