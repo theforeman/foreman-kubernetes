@@ -1,0 +1,12 @@
+outboundProxy:
+  enabled: true
+
+networkPolicy:
+  egress:
+    enabled: true
+    outboundProxy:
+      peers:
+        - ipBlock:
+            cidr: 192.0.2.30/32
+      ports:
+        - 3128

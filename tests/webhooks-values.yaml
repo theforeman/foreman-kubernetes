@@ -1,0 +1,17 @@
+foreman:
+  pluginPolicy:
+    allowUnverified: true
+  enabledPlugins:
+    - foreman-tasks
+    - katello
+    - foreman_webhooks
+
+networkPolicy:
+  egress:
+    external:
+      webhooks:
+        peers:
+          - ipBlock:
+              cidr: 192.0.2.40/32
+        ports:
+          - 9443

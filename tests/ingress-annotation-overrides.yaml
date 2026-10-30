@@ -1,0 +1,8 @@
+ingress:
+  foreman:
+    annotations:
+      nginx.ingress.kubernetes.io/auth-tls-verify-client: "off"
+      nginx.ingress.kubernetes.io/proxy-set-headers: attacker/forged-headers
+  pulpContent:
+    annotations:
+      nginx.ingress.kubernetes.io/auth-tls-verify-client: "off"

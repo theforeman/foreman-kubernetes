@@ -1,0 +1,36 @@
+networkPolicy:
+  egress:
+    enabled: true
+    database:
+      peers:
+        - ipBlock:
+            cidr: 192.0.2.10/32
+    valkey:
+      peers:
+        - ipBlock:
+            cidr: 192.0.2.11/32
+      ports:
+        - 6379
+    recovery:
+      apiServer:
+        peers:
+          - ipBlock:
+              cidr: 192.0.2.20/32
+        ports:
+          - 6443
+      repository:
+        peers:
+          - ipBlock:
+              cidr: 192.0.2.21/32
+        ports:
+          - 22
+          - 443
+    external:
+      foreman:
+        peers:
+          - ipBlock:
+              cidr: 198.51.100.0/24
+      pulp:
+        peers:
+          - ipBlock:
+              cidr: 203.0.113.0/24

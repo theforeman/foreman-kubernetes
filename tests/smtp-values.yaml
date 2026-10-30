@@ -1,0 +1,23 @@
+foreman:
+  email:
+    enabled: true
+    replyAddress: foreman@example.test
+    subjectPrefix: "[managed-foreman]"
+    smtp:
+      address: smtp.example.test
+      port: 587
+      domain: example.test
+      authentication: login
+      existingSecret: foreman-smtp
+      usernameSecretKey: smtp-user
+      passwordSecretKey: smtp-password
+
+networkPolicy:
+  egress:
+    external:
+      smtp:
+        peers:
+          - ipBlock:
+              cidr: 192.0.2.25/32
+        ports:
+          - 587
