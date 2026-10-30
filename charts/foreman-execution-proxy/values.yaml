@@ -1,0 +1,176 @@
+nameOverride: ""
+fullnameOverride: ""
+
+imagePullSecrets: []
+
+# Guarded releases override this with the exact digest-pinned compatibility set.
+compatibilitySet: unqualified
+
+# Set together only by the ForemanRelease controller. These labels identify
+# the paired proxy rollout without becoming part of its immutable selector.
+releaseOperation:
+  id: ""
+  ownerUid: ""
+
+# Recovery helpers set this while the application data is quiesced. Persistent
+# state, configuration, and the Service remain, but no executor Pod is allowed
+# to run or accept new work.
+maintenance:
+  enabled: false
+
+# Change after rotating a referenced TLS, SSH, or known-hosts Secret. Several
+# files use subPath or are copied into runtime storage during pod startup.
+secretRolloutToken: initial
+
+image:
+  repository: quay.io/foreman/foreman-proxy
+  tag: nightly
+  pullPolicy: IfNotPresent
+
+# Smart Proxy Dynflow and the SSH provider retain process-local state. This
+# profile is deliberately a singleton until active-job handoff is supported.
+replicas: 1
+progressDeadlineSeconds: 600
+
+proxy:
+  foremanUrl: https://foreman.example.test
+  requestDrainSeconds: 10
+  # Certificate common names that may call the Smart Proxy API.
+  trustedHosts:
+    - foreman.example.test
+  logLevel: INFO
+  tlsMinVersion: "1.2"
+  service:
+    port: 8443
+  existingTlsSecret: foreman-execution-proxy-tls
+  tlsSecretKeys:
+    ca: ca.crt
+    certificate: tls.crt
+    privateKey: tls.key
+  existingForemanClientSecret: foreman-execution-proxy-foreman-client
+  foremanClientSecretKeys:
+    ca: ca.crt
+    certificate: tls.crt
+    privateKey: tls.key
+
+ssh:
+  existingKeySecret: foreman-execution-proxy-ssh
+  privateKeyKey: id_rsa_foreman_proxy
+  publicKeyKey: id_rsa_foreman_proxy.pub
+  user: root
+  remoteWorkingDir: /var/tmp
+  cleanupWorkingDirs: true
+  userCertificate:
+    enabled: false
+    certificateKey: id_rsa_foreman_proxy-cert.pub
+    caPublicKeyKey: ssh-user-ca.pub
+  hostKeyVerification:
+    # Strict verification is the production default. Populate this Secret with
+    # pinned host keys or @cert-authority entries for every managed target.
+    enabled: true
+    existingKnownHostsSecret: foreman-execution-proxy-known-hosts
+    knownHostsKey: known_hosts
+    # Test-only escape hatch. Disabling verification is rejected unless this
+    # exact acknowledgement is supplied in deployment values.
+    insecureSkipVerificationAcknowledgement: ""
+
+ansible:
+  # The volume contains ansible.cfg plus roles/ and collections/. When empty,
+  # the chart creates a PVC that an external GitOps/content job can populate.
+  existingClaim: ""
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 5Gi
+
+state:
+  # Holds the proxy Dynflow SQLite database and transient REx/Ansible runner
+  # directories so a pod restart can recover the Dynflow execution plan.
+  existingClaim: ""
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 5Gi
+
+serviceAccount:
+  create: true
+  name: ""
+
+smokeTest:
+  # This must be the same Secret as foreman.existingCertificateSecret in the
+  # application release. Its client certificate CN must be in trustedHosts.
+  enabled: true
+  foremanCertificateSecret: foreman-certificates
+  activeDeadlineSeconds: 120
+  resources:
+    requests:
+      cpu: 10m
+      memory: 32Mi
+    limits:
+      memory: 128Mi
+
+monitoring:
+  prometheusRule:
+    # Requires Prometheus Operator and kube-state-metrics. The release
+    # preflight verifies the PrometheusRule CRD when this is enabled.
+    enabled: false
+    labels: {}
+
+networkPolicy:
+  enabled: true
+  ingress:
+    # The defaults select Foreman web and all Dynflow roles in the same
+    # namespace. Override this list when the application release differs.
+    peers:
+      - podSelector:
+          matchLabels:
+            app.kubernetes.io/instance: foreman
+          matchExpressions:
+            - key: app.kubernetes.io/component
+              operator: In
+              values:
+                - foreman
+                - dynflow-orchestrator
+                - dynflow-worker
+                - dynflow-worker-hosts-queue
+                - execution-proxy-registration
+  egress:
+    # Standard NetworkPolicy cannot resolve host names. Enable only after
+    # declaring the Foreman and managed-host destinations below.
+    enabled: false
+    dns:
+      namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: kube-system
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    foreman:
+      peers: []
+      ports:
+        - 443
+    targets:
+      peers: []
+      ports:
+        - 22
+
+# Pin both the long-running proxy and its smoke test to nodes that can mount
+# the singleton RWO state and Ansible claims.
+scheduling:
+  priorityClassName: ""
+  nodeSelector: {}
+  tolerations: []
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    memory: 2Gi
+
+initResources:
+  requests:
+    cpu: 25m
+    memory: 32Mi
+  limits:
+    memory: 128Mi
+
+terminationGracePeriodSeconds: 120
