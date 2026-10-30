@@ -1,0 +1,19 @@
+{{- if and (eq .Values.pulp.storage.backend "filesystem") (not .Values.pulp.storage.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-pulp
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "pulp") | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.pulp.storage.accessMode }}
+  {{- with .Values.pulp.storage.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.pulp.storage.size }}
+{{- end }}
