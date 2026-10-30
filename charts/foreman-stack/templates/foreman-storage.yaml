@@ -1,0 +1,39 @@
+{{- if not .Values.foreman.sharedTmp.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-foreman-tmp
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman-tmp") | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.foreman.sharedTmp.accessMode }}
+  {{- with .Values.foreman.sharedTmp.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.foreman.sharedTmp.size }}
+{{- end }}
+{{- if not .Values.foreman.avatarStorage.existingClaim }}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-foreman-avatars
+  annotations:
+    helm.sh/resource-policy: keep
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman-avatars") | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.foreman.avatarStorage.accessMode }}
+  {{- with .Values.foreman.avatarStorage.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.foreman.avatarStorage.size }}
+{{- end }}

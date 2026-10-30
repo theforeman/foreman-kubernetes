@@ -1,0 +1,101 @@
+{{- if not .Values.maintenance.enabled }}
+{{- if .Values.foreman.autoscaling.enabled }}
+{{- if gt (int .Values.foreman.autoscaling.minReplicas) (int .Values.foreman.autoscaling.maxReplicas) }}
+{{- fail "foreman.autoscaling.minReplicas must not exceed maxReplicas" }}
+{{- end }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-foreman
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman") | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "foreman-stack.fullname" . }}-foreman
+  minReplicas: {{ .Values.foreman.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.foreman.autoscaling.maxReplicas }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.foreman.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- $root := . }}
+{{- $services := list
+  (dict "name" "api" "autoscaling" .Values.pulp.api.autoscaling)
+  (dict "name" "content" "autoscaling" .Values.pulp.content.autoscaling)
+-}}
+{{- range $service := $services }}
+{{- if $service.autoscaling.enabled }}
+{{- if gt (int $service.autoscaling.minReplicas) (int $service.autoscaling.maxReplicas) }}
+{{- fail (printf "pulp.%s.autoscaling.minReplicas must not exceed maxReplicas" $service.name) }}
+{{- end }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "foreman-stack.fullname" $root }}-pulp-{{ $service.name }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" $root "component" (printf "pulp-%s" $service.name)) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "foreman-stack.fullname" $root }}-pulp-{{ $service.name }}
+  minReplicas: {{ $service.autoscaling.minReplicas }}
+  maxReplicas: {{ $service.autoscaling.maxReplicas }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $service.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}
+{{- $dynflowWorkers := list
+  (dict "name" "worker" "autoscaling" .Values.foreman.dynflow.workerAutoscaling)
+  (dict "name" "worker-hosts-queue" "autoscaling" .Values.foreman.dynflow.hostsQueueAutoscaling)
+-}}
+{{- range $worker := $dynflowWorkers }}
+{{- if $worker.autoscaling.enabled }}
+{{- if gt (int $worker.autoscaling.minReplicas) (int $worker.autoscaling.maxReplicas) }}
+{{- fail (printf "foreman.dynflow.%s autoscaling minReplicas must not exceed maxReplicas" $worker.name) }}
+{{- end }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "foreman-stack.fullname" $root }}-dynflow-{{ $worker.name }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" $root "component" (printf "dynflow-%s" $worker.name)) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "foreman-stack.fullname" $root }}-dynflow-{{ $worker.name }}
+  minReplicas: {{ $worker.autoscaling.minReplicas }}
+  maxReplicas: {{ $worker.autoscaling.maxReplicas }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 600
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $worker.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}
+{{- end }}

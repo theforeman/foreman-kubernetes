@@ -1,0 +1,29 @@
+{{- if and .Values.podDisruptionBudget.enabled (not .Values.maintenance.enabled) }}
+{{- $root := . }}
+{{- $components := list
+  (dict "name" "pulp-api" "minimumReplicas" (ternary .Values.pulp.api.autoscaling.minReplicas .Values.pulp.api.replicas .Values.pulp.api.autoscaling.enabled))
+  (dict "name" "pulp-content" "minimumReplicas" (ternary .Values.pulp.content.autoscaling.minReplicas .Values.pulp.content.replicas .Values.pulp.content.autoscaling.enabled))
+  (dict "name" "pulp-worker" "minimumReplicas" .Values.pulp.workers.replicas)
+-}}
+{{- $rendered := 0 }}
+{{- range $component := $components }}
+{{- if gt (int $component.minimumReplicas) 1 }}
+{{- if gt $rendered 0 }}
+---
+{{- end }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "foreman-stack.fullname" $root }}-{{ $component.name }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" $root "component" $component.name) | nindent 4 }}
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $root.Release.Name }}
+      app.kubernetes.io/component: {{ $component.name }}
+{{- $rendered = add1 $rendered }}
+{{- end }}
+{{- end }}
+{{- end }}
