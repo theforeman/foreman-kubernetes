@@ -1,0 +1,84 @@
+ingress:
+  enabled: true
+  className: nginx
+  foreman:
+    host: foreman.example.test
+    tlsSecret: foreman-ingress-tls
+    clientCaSecret: ingress-client-ca
+  pulpContent:
+    host: content.example.test
+    tlsSecret: pulp-content-ingress-tls
+    clientCaSecret: ingress-client-ca
+
+affinity:
+  # This production-style profile expects labelled zones and enough nodes for
+  # every redundant component's minimum replica count.
+  whenUnsatisfiable: DoNotSchedule
+
+smartProxy:
+  executionRegistration:
+    enabled: true
+    releaseName: execution
+    name: Kubernetes execution proxy
+    url: https://execution-foreman-execution-proxy:8443
+    port: 8443
+
+foreman:
+  image:
+    tag: nightly
+  replicas: 3
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  dynflow:
+    workers: 4
+    workerAutoscaling:
+      enabled: true
+      minReplicas: 4
+      maxReplicas: 12
+      targetCPUUtilizationPercentage: 70
+    hostsQueueWorkers: 2
+    hostsQueueAutoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 6
+      targetCPUUtilizationPercentage: 70
+  enabledPlugins:
+    - foreman-tasks
+    - katello
+    - foreman_remote_execution
+    - foreman_ansible
+  pluginPolicy:
+    allowUnverified: true
+
+candlepin:
+  image:
+    tag: foreman-nightly
+  replicas: 1
+
+pulp:
+  image:
+    tag: foreman-nightly
+  api:
+    replicas: 3
+    gunicornWorkers: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 12
+      targetCPUUtilizationPercentage: 70
+  content:
+    replicas: 3
+    gunicornWorkers: 2
+    autoscaling:
+      enabled: true
+      minReplicas: 3
+      maxReplicas: 12
+      targetCPUUtilizationPercentage: 70
+  workers:
+    replicas: 8
+  storage:
+    storageClass: cephfs
+    size: 500Gi
