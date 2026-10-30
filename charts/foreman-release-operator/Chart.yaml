@@ -1,0 +1,12 @@
+apiVersion: v2
+name: foreman-release-operator
+description: Restart-safe release sequencing for the Foreman Kubernetes platform
+type: application
+version: 0.1.0
+appVersion: nightly
+kubeVersion: ">=1.30.0-0"
+home: https://theforeman.org/
+sources:
+  - https://github.com/theforeman/foreman
+annotations:
+  foreman.org/status: experimental
