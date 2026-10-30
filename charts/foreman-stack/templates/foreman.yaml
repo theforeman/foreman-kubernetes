@@ -1,0 +1,147 @@
+{{- if gt (int .Values.foreman.puma.threadsMin) (int .Values.foreman.puma.threadsMax) }}
+{{- fail "foreman.puma.threadsMin cannot exceed foreman.puma.threadsMax" }}
+{{- end }}
+{{- if lt (int .Values.foreman.databasePools.web) (int .Values.foreman.puma.threadsMax) }}
+{{- fail "foreman.databasePools.web must be at least foreman.puma.threadsMax" }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-foreman
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman") | nindent 4 }}
+spec:
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: foreman
+  ports:
+    - name: http
+      port: {{ .Values.foreman.service.port }}
+      targetPort: http
+{{- if not .Values.maintenance.enabled }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-foreman
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman") | nindent 4 }}
+spec:
+  progressDeadlineSeconds: {{ .Values.platform.deploymentProgressDeadlineSeconds }}
+  {{- if not .Values.foreman.autoscaling.enabled }}
+  replicas: {{ .Values.foreman.replicas }}
+  {{- end }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: foreman
+  template:
+    metadata:
+      labels:
+        {{- include "foreman-stack.podLabels" (dict "root" . "component" "foreman") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/runtime-config.yaml") . | sha256sum }}
+        checksum/secrets: {{ .Values.secretRolloutToken | sha256sum }}
+    spec:
+      {{- include "foreman-stack.scheduling" . | nindent 6 }}
+      serviceAccountName: {{ include "foreman-stack.serviceAccountName" . }}
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: {{ .Values.foreman.puma.terminationGracePeriodSeconds }}
+      {{- include "foreman-stack.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        fsGroup: 994
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 994
+        runAsNonRoot: true
+        runAsUser: 994
+        seccompProfile:
+          type: RuntimeDefault
+      {{- if .Values.migrations.enabled }}
+      initContainers:
+        {{- include "foreman-stack.foremanMigrationWait" . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: foreman
+          image: {{ include "foreman-stack.image" .Values.foreman.image }}
+          imagePullPolicy: {{ .Values.foreman.image.pullPolicy }}
+          securityContext:
+            {{- include "foreman-stack.restrictedContainerSecurityContext" (dict "runAsUser" 994 "runAsGroup" 994) | nindent 12 }}
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              mkdir -p "${FOREMAN_RUN_DIR}/sockets"
+              exec /usr/share/foreman/bin/rails server --environment production --pid /tmp/rails.pid
+          lifecycle:
+            preStop:
+              exec:
+                command:
+                  - /usr/bin/sleep
+                  - {{ .Values.foreman.puma.requestDrainSeconds | quote }}
+          ports:
+            - name: http
+              containerPort: 3000
+          env:
+            {{- include "foreman-stack.foremanEnv" . | nindent 12 }}
+            {{- include "foreman-stack.foremanDatabasePoolEnv" .Values.foreman.databasePools.web | nindent 12 }}
+            - name: FOREMAN_RUN_DIR
+              value: /run/foreman-puma
+            - name: FOREMAN_READINESS_HOST
+              value: {{ .Values.platform.fqdn | quote }}
+          volumeMounts:
+            {{- include "foreman-stack.foremanVolumeMounts" . | nindent 12 }}
+            {{- include "foreman-stack.foremanAvatarVolumeMount" . | nindent 12 }}
+            - name: foreman-puma-runtime
+              mountPath: /run/foreman-puma
+          startupProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            exec:
+              command:
+                - ruby
+                - /opt/foreman-kubernetes/foreman-readiness.rb
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            tcpSocket:
+              port: http
+            initialDelaySeconds: 90
+            periodSeconds: 20
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            {{- toYaml .Values.foreman.resources | nindent 12 }}
+      volumes:
+        {{- include "foreman-stack.foremanVolumes" . | nindent 8 }}
+        {{- include "foreman-stack.foremanAvatarVolume" . | nindent 8 }}
+        - name: foreman-puma-runtime
+          emptyDir:
+            sizeLimit: 1Mi
+      {{- include "foreman-stack.topologySpread" (dict "Values" .Values "Release" .Release "component" "foreman") | nindent 6 }}
+{{- $minimumReplicas := ternary .Values.foreman.autoscaling.minReplicas .Values.foreman.replicas .Values.foreman.autoscaling.enabled }}
+{{- if and .Values.podDisruptionBudget.enabled (gt (int $minimumReplicas) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "foreman-stack.fullname" . }}-foreman
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: foreman
+{{- end }}
+{{- end }}

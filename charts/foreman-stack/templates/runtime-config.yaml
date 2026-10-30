@@ -1,0 +1,218 @@
+{{- $verifiedModes := list "verify-ca" "verify-full" -}}
+{{- if and (has .Values.foreman.database.sslMode $verifiedModes) (not .Values.foreman.existingDatabaseCaSecret) -}}
+{{- fail "foreman.existingDatabaseCaSecret is required when foreman.database.sslMode verifies the server certificate" -}}
+{{- end -}}
+{{- if and (has .Values.candlepin.database.sslMode $verifiedModes) (not .Values.candlepin.existingDatabaseCaSecret) -}}
+{{- fail "candlepin.existingDatabaseCaSecret is required when candlepin.database.sslMode verifies the server certificate" -}}
+{{- end -}}
+{{- if and (has .Values.pulp.database.sslMode $verifiedModes) (not .Values.pulp.existingDatabaseCaSecret) -}}
+{{- fail "pulp.existingDatabaseCaSecret is required when pulp.database.sslMode verifies the server certificate" -}}
+{{- end -}}
+{{- if and .Values.valkey.tls.enabled (not .Values.valkey.tls.existingCaSecret) -}}
+{{- fail "valkey.tls.existingCaSecret is required when Valkey TLS is enabled" -}}
+{{- end -}}
+{{- if and (not .Values.valkey.tls.enabled) .Values.valkey.tls.existingCaSecret -}}
+{{- fail "valkey.tls.existingCaSecret must be empty when Valkey TLS is disabled" -}}
+{{- end -}}
+{{- if and .Values.foreman.email.enabled (not .Values.foreman.email.smtp.address) -}}
+{{- fail "foreman.email.smtp.address is required when email is enabled" -}}
+{{- end -}}
+{{- if and .Values.foreman.email.enabled (ne .Values.foreman.email.smtp.authentication "none") (not .Values.foreman.email.smtp.existingSecret) -}}
+{{- fail "foreman.email.smtp.existingSecret is required when SMTP authentication is enabled" -}}
+{{- end -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "foreman-stack.foremanConfigName" . }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "foreman-config") | nindent 4 }}
+data:
+  database.yml: |
+    production:
+      url: <%= ENV.fetch('DATABASE_URL') %>
+      pool: <%= Integer(ENV.fetch('FOREMAN_DATABASE_POOL')) %>
+  settings.yaml: |
+    ---
+    :domain: {{ .Values.platform.domain | quote }}
+    :fqdn: {{ .Values.platform.fqdn | quote }}
+    :foreman_url: {{ .Values.platform.externalUrl | quote }}
+    :hosts:
+      - {{ .Values.platform.fqdn | quote }}
+      {{- range .Values.platform.aliases }}
+      - {{ . | quote }}
+      {{- end }}
+    :trusted_proxies:
+      - 127.0.0.0/8
+      - "::1"
+      {{- range .Values.platform.trustedProxies }}
+      - {{ . | quote }}
+      {{- end }}
+    :ssl_certificate: /etc/foreman/client_cert.pem
+    :ssl_ca_file: /etc/foreman/katello-default-ca.crt
+    :ssl_priv_key: /etc/foreman/client_key.pem
+    :ssl_client_cert_env: HTTP_SSL_CLIENT_CERT
+    :ssl_client_dn_env: HTTP_SSL_CLIENT_S_DN
+    :ssl_client_verify_env: HTTP_SSL_CLIENT_VERIFY
+    :require_ssl: true
+    :rails_cache_store:
+      :type: redis
+      :options:
+        :compress: true
+        :namespace: foreman
+        {{- if .Values.valkey.tls.enabled }}
+        :ssl_params:
+          :ca_file: /etc/foreman/certs/valkey-ca.crt
+          :verify_mode: 1
+        {{- end }}
+    {{- if .Values.foreman.email.enabled }}
+    :delivery_method: smtp
+    :email_reply_address: {{ .Values.foreman.email.replyAddress | quote }}
+    :email_subject_prefix: {{ .Values.foreman.email.subjectPrefix | quote }}
+    :smtp_enable_starttls_auto: true
+    :smtp_openssl_verify_mode: peer
+    :smtp_address: {{ .Values.foreman.email.smtp.address | quote }}
+    :smtp_port: {{ .Values.foreman.email.smtp.port }}
+    :smtp_domain: {{ .Values.foreman.email.smtp.domain | quote }}
+    {{- if ne .Values.foreman.email.smtp.authentication "none" }}
+    :smtp_authentication: {{ .Values.foreman.email.smtp.authentication | quote }}
+    :smtp_user_name: <%= ENV.fetch('FOREMAN_SMTP_USERNAME') %>
+    :smtp_password: <%= ENV.fetch('FOREMAN_SMTP_PASSWORD') %>
+    {{- end }}
+    {{- end }}
+  katello.yaml: |
+    ---
+    :katello:
+      :rest_client_timeout: 3600
+      :candlepin:
+        :url: {{ printf "https://%s:%v/candlepin" (include "foreman-stack.candlepinServiceName" .) .Values.candlepin.service.port | quote }}
+        :oauth_key: katello
+        :oauth_secret: <%= ENV.fetch('CANDLEPIN_OAUTH_SECRET').inspect %>
+        :ca_cert_file: /etc/foreman/katello-default-ca.crt
+      :pulp:
+        :ca_cert_file: /etc/foreman/katello-default-ca.crt
+  foreman-readiness.rb: |
+{{ .Files.Get "files/foreman-readiness.rb" | indent 4 }}
+  pulp-readiness.py: |
+{{ .Files.Get "files/pulp-readiness.py" | indent 4 }}
+  pulp-app-readiness.py: |
+{{ .Files.Get "files/pulp-app-readiness.py" | indent 4 }}
+  dynflow-orchestrator.yml: |
+    ---
+    :concurrency: 1
+    :queues:
+      - - dynflow_orchestrator
+        - 1
+  dynflow-worker.yml: |
+    ---
+    :concurrency: {{ .Values.foreman.dynflow.workerConcurrency }}
+    :queues:
+      - - default
+        - 1
+      - - remote_execution
+        - 1
+  dynflow-worker-hosts-queue.yml: |
+    ---
+    :concurrency: {{ .Values.foreman.dynflow.hostsQueueConcurrency }}
+    :queues:
+      - - hosts_queue
+        - 1
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "foreman-stack.candlepinConfigName" . }}
+  labels:
+    {{- include "foreman-stack.componentLabels" (dict "root" . "component" "candlepin-config") | nindent 4 }}
+data:
+  candlepin.conf: |
+    candlepin.consumer_system_name_pattern=.+
+    candlepin.environment_content_filtering=true
+    candlepin.auth.basic.enable=false
+    candlepin.auth.trusted.enable=false
+    candlepin.db.database_manage_on_startup={{ ternary "HALT" "Manage" .Values.migrations.enabled }}
+    candlepin.auth.oauth.enable=true
+    candlepin.auth.oauth.consumer.katello.secret=overridden-by-environment
+    module.config.adapter_module=org.candlepin.katello.KatelloModule
+    candlepin.ca_key=/etc/candlepin/certs/candlepin-ca.key
+    candlepin.ca_cert=/etc/candlepin/certs/candlepin-ca.crt
+    candlepin.async.thread.shutdown.timeout={{ .Values.candlepin.shutdown.asyncJobsTimeoutSeconds }}
+    candlepin.async.jobs.ExpiredPoolsCleanupJob.schedule=0 0 0 * * ?
+    jpa.config.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect
+    jpa.config.hibernate.hbm2ddl.auto=validate
+    jpa.config.hibernate.connection.username={{ .Values.candlepin.database.user }}
+    jpa.config.hibernate.connection.password=overridden-by-environment
+    jpa.config.hibernate.connection.driver_class=org.postgresql.Driver
+    jpa.config.hibernate.connection.url=jdbc:postgresql://{{ .Values.candlepin.database.host }}:{{ .Values.candlepin.database.port }}/{{ .Values.candlepin.database.name }}?sslmode={{ .Values.candlepin.database.sslMode }}{{ if .Values.candlepin.existingDatabaseCaSecret }}&sslrootcert=/etc/candlepin/certs/db-ca.crt{{ end }}
+    org.quartz.jobStore.misfireThreshold=60000
+    org.quartz.jobStore.useProperties=false
+    org.quartz.jobStore.dataSource=myDS
+    org.quartz.jobStore.tablePrefix=QRTZ_
+    org.quartz.jobStore.class=org.quartz.impl.jdbcjobstore.JobStoreTX
+    org.quartz.jobStore.driverDelegateClass=org.quartz.impl.jdbcjobstore.PostgreSQLDelegate
+    org.quartz.dataSource.myDS.driver=org.postgresql.Driver
+    org.quartz.dataSource.myDS.user={{ .Values.candlepin.database.user }}
+    org.quartz.dataSource.myDS.password=overridden-by-environment
+    org.quartz.dataSource.myDS.maxConnections=5
+    org.quartz.dataSource.myDS.URL=jdbc:postgresql://{{ .Values.candlepin.database.host }}:{{ .Values.candlepin.database.port }}/{{ .Values.candlepin.database.name }}?sslmode={{ .Values.candlepin.database.sslMode }}{{ if .Values.candlepin.existingDatabaseCaSecret }}&sslrootcert=/etc/candlepin/certs/db-ca.crt{{ end }}
+  server.xml: |
+    <Server port="8005" shutdown="SHUTDOWN">
+      <Listener className="org.apache.catalina.core.OpenSSLLifecycleListener" />
+      <Listener className="org.apache.catalina.core.JreMemoryLeakPreventionListener" />
+      <Listener className="org.apache.catalina.mbeans.GlobalResourcesLifecycleListener" />
+      <Listener className="org.apache.catalina.core.ThreadLocalLeakPreventionListener" />
+      <GlobalNamingResources>
+        <Resource name="UserDatabase" auth="Container" type="org.apache.catalina.UserDatabase"
+                  description="User database that can be updated and saved"
+                  factory="org.apache.catalina.users.MemoryUserDatabaseFactory"
+                  pathname="conf/tomcat-users.xml" />
+      </GlobalNamingResources>
+      <Service name="Catalina">
+        <Connector port="{{ .Values.candlepin.service.port }}" address="0.0.0.0"
+                   protocol="org.apache.coyote.http11.Http11NioProtocol"
+                   SSLEnabled="true" maxThreads="150" scheme="https" secure="true">
+          <SSLHostConfig certificateVerification="optional" protocols="TLSv1.2,TLSv1.3"
+                         caCertificateFile="/etc/candlepin/certs/candlepin-ca.crt"
+                         ciphers="PROFILE=SYSTEM">
+            <Certificate certificateFile="/etc/candlepin/certs/tomcat.crt"
+                         certificateKeyFile="/etc/candlepin/certs/tomcat.key" />
+          </SSLHostConfig>
+        </Connector>
+        <Engine name="Catalina" defaultHost="localhost">
+          <Realm className="org.apache.catalina.realm.UserDatabaseRealm" resourceName="UserDatabase"/>
+          <Host name="localhost" appBase="webapps" unpackWARs="true" autoDeploy="true">
+            <Valve className="org.apache.catalina.valves.AccessLogValve" directory="/proc/self/fd"
+                   prefix="1" suffix="" rotatable="false"
+                   pattern="%h %l %u %t &quot;%r&quot; %s %b" />
+          </Host>
+        </Engine>
+      </Service>
+    </Server>
+  tomcat.conf: |
+    TOMCAT_CFG_LOADED="1"
+    TOMCATS_BASE="/var/lib/tomcats/"
+    JAVA_HOME="/usr/lib/jvm/jre-25"
+    CATALINA_HOME="/usr/share/tomcat"
+    CATALINA_TMPDIR="/var/cache/tomcat/temp"
+    JAVA_OPTS="-Xms{{ .Values.candlepin.java.xms }} -Xmx{{ .Values.candlepin.java.xmx }} -Dcom.redhat.fips=false --enable-native-access=ALL-UNNAMED"
+    SECURITY_MANAGER="0"
+  logging.properties: |
+    handlers = java.util.logging.ConsoleHandler
+    .handlers = java.util.logging.ConsoleHandler
+    java.util.logging.ConsoleHandler.level = ALL
+    java.util.logging.ConsoleHandler.formatter = org.apache.juli.OneLineFormatter
+    java.util.logging.ConsoleHandler.encoding = UTF-8
+    org.apache.catalina.core.ContainerBase.[Catalina].[localhost].level = INFO
+    org.apache.catalina.core.ContainerBase.[Catalina].[localhost].handlers = java.util.logging.ConsoleHandler
+  logback.xml: |
+    <?xml version="1.0" encoding="UTF-8"?>
+    <configuration>
+      <contextName>candlepin</contextName>
+      <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder><pattern>%d{ISO8601} [thread=%thread] %-5p %c - %m%n</pattern></encoder>
+      </appender>
+      <appender name="ASYNC" class="ch.qos.logback.classic.AsyncAppender">
+        <appender-ref ref="STDOUT"/>
+      </appender>
+      <root level="WARN"><appender-ref ref="ASYNC"/></root>
+      <logger name="org.candlepin" level="INFO"/>
+    </configuration>
